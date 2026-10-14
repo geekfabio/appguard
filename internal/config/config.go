@@ -54,6 +54,10 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+func Normalize(cfg *Config) {
+	applyDefaults(cfg)
+}
+
 func applyDefaults(cfg *Config) {
 	if cfg.AgentID == "" { host, _ := os.Hostname(); cfg.AgentID = host }
 	if cfg.Role == "" { cfg.Role = "agent" }
