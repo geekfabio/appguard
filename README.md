@@ -1,25 +1,110 @@
 # AppGuard
 
-> **Versão actual: v0.4.0**
+> **Versão actual: v0.5.0**
 
 AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
-## Novidades da v0.4.0
+## Novidades da v0.5.0
 
-- pesquisa de computadores por nome ou grupo;
-- filtro por grupo;
-- filtro Online/Offline;
-- edição remota da configuração de cada agente;
-- alteração remota do grupo;
-- alteração remota do intervalo de verificação;
-- gestão remota da lista de aplicações supervisionadas;
-- aplicação da nova configuração sem reiniciar o serviço;
-- persistência automática da configuração recebida no `appguard.json`;
-- heartbeat passa a incluir o snapshot da configuração do agente;
-- página individual por computador actualizada;
-- visualização do estado `restartPending`.
+- comandos remotos persistentes em SQLite;
+- entrega de comandos a agentes que estavam offline;
+- protocolo de ACK após execução do comando;
+- estado dos comandos mantido até confirmação do agente;
+- comando `appguard.exe version`;
+- comando `appguard.exe enroll`;
+- endpoint de enrollment;
+- versão do agente enviada no heartbeat;
+- versão visível no dashboard;
+- instalação tenta fazer enrollment automaticamente;
+- GitHub Actions para testes e build Windows amd64;
+- artefacto `appguard.exe` gerado pelo pipeline CI.
 
-> Os comandos remotos continuam em memória no controlador nesta versão. A persistência dos comandos para agentes offline passa para a v0.5.
+## Comandos persistentes
+
+A tabela SQLite `commands` mantém as ordens emitidas pelo controlador.
+
+Fluxo:
+
+```text
+Administrador envia comando
+        ↓
+Controller grava em SQLite
+        ↓
+PC pode estar offline
+        ↓
+Agente volta à rede
+        ↓
+GET /api/v1/commands/{agentId}
+        ↓
+Agente executa
+        ↓
+POST /api/v1/commands/ack/{commandId}
+        ↓
+Controller marca como entregue
+```
+
+Isto evita que uma ordem desapareça apenas porque o computador estava desligado ou temporariamente sem rede.
+
+A entrega segue uma estratégia **at-least-once**: se o agente executar um comando mas o ACK falhar por problema de rede, o comando pode voltar a ser recebido. Por isso, as operações do AppGuard devem continuar a ser tratadas de forma idempotente sempre que possível.
+
+## Enrollment
+
+Depois de configurar `controller.url` e `controller.token`:
+
+```powershell
+.\appguard.exe enroll -config .\appguard.json
+```
+
+Exemplo de resposta:
+
+```text
+AppGuard enrolled: PC-001
+```
+
+O instalador PowerShell tenta efectuar o enrollment automaticamente. Se o controlador não estiver disponível, a instalação continua e o agente poderá comunicar posteriormente através do heartbeat normal.
+
+Endpoint:
+
+```text
+POST /api/v1/enroll
+```
+
+## Versionamento
+
+Consultar a versão instalada:
+
+```powershell
+.\appguard.exe version
+```
+
+Resultado:
+
+```text
+AppGuard 0.5.0
+```
+
+O heartbeat inclui a versão do agente e o dashboard apresenta essa informação por computador.
+
+## Build automático
+
+Existe um workflow:
+
+```text
+.github/workflows/build-windows.yml
+```
+
+O pipeline executa:
+
+1. checkout;
+2. configuração do Go 1.23;
+3. download das dependências;
+4. `go test ./...`;
+5. compilação para Windows amd64;
+6. geração de `dist/appguard.exe`;
+7. inclusão da configuração exemplo e scripts;
+8. upload do artefacto do workflow.
+
+O workflow é executado em pushes para `main`, pull requests e tags `v*`.
 
 ## Arquitectura
 
@@ -30,46 +115,21 @@ AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog l
                          │
                     appguard.db
                          │
+        agentes + eventos + comandos pendentes
+                         │
              ┌───────────┼───────────┐
              │           │           │
              ▼           ▼           ▼
           PC-001      PC-002      PC-003
-          Agent       Agent       Agent
+          v0.5.0      v0.5.0      v0.4.0
              │           │           │
              ▼           ▼           ▼
-       processos      processos    processos
+        processos     processos    processos
 ```
-
-Cada agente continua a supervisionar localmente os seus processos mesmo que o controlador esteja desligado.
-
-## Dashboard
-
-Iniciar o controlador:
-
-```powershell
-.\appguard.exe controller -config .\appguard.json
-```
-
-Abrir:
-
-```text
-http://192.168.1.10:8443
-```
-
-O dashboard permite:
-
-- consultar computadores Online/Offline;
-- pesquisar PCs;
-- filtrar por grupo;
-- filtrar por estado;
-- consultar processos activos;
-- consultar retries e falhas;
-- reiniciar/parar agentes;
-- abrir a página individual de cada PC.
 
 ## Configuração remota
 
-Na página individual do computador é apresentada a configuração estruturada actual.
+A configuração estruturada continua disponível na página individual de cada agente.
 
 Exemplo:
 
@@ -91,27 +151,28 @@ Exemplo:
 }
 ```
 
-Depois de guardar:
-
-1. o controlador coloca a configuração na fila do agente;
-2. o agente recebe `apply-settings`;
-3. os valores são validados;
-4. o watchdog actualiza a configuração em memória;
-5. o ficheiro `appguard.json` é actualizado;
-6. o novo intervalo passa a ser usado automaticamente.
+A configuração remota também utiliza a fila de comandos persistentes.
 
 ## Segurança
 
-A configuração remota é limitada a campos estruturados do AppGuard.
+A v0.5.0 continua destinada principalmente a uma LAN controlada.
 
-Não existe endpoint para execução arbitrária de:
+Actualmente:
 
-- PowerShell;
-- CMD;
-- scripts;
-- comandos shell.
+- APIs protegidas por Bearer Token;
+- configuração remota apenas estruturada;
+- sem execução arbitrária de PowerShell/CMD;
+- sem execução remota de scripts;
+- comandos persistidos localmente no SQLite.
 
-Isto reduz significativamente o risco de utilização indevida do agente.
+Ainda não estão implementados:
+
+- TLS interno automático;
+- autenticação individual por dispositivo;
+- assinatura/verificação criptográfica de actualizações;
+- RBAC.
+
+Por isso, o auto-update completo foi deliberadamente adiado até existir validação criptográfica da versão distribuída.
 
 ## Política de recuperação
 
@@ -119,38 +180,7 @@ Isto reduz significativamente o risco de utilização indevida do agente.
 5s → 10s → 30s → 60s → 120s
 ```
 
-Uma aplicação não pode ter vários restarts concorrentes. O estado `restartPending` impede tentativas duplicadas.
-
-O contador de retries é reposto depois do período estável definido em:
-
-```json
-{
-  "resetAfterSeconds": 300
-}
-```
-
-## Persistência SQLite
-
-Actualmente são persistidos:
-
-- agentes;
-- último heartbeat;
-- estado dos processos;
-- grupo;
-- eventos;
-- crashes;
-- retries;
-- falhas e sucessos de restart.
-
-Base predefinida:
-
-```json
-{
-  "controller": {
-    "databasePath": "appguard.db"
-  }
-}
-```
+O estado `restartPending` impede múltiplos restarts concorrentes.
 
 ## Compilar
 
@@ -159,7 +189,7 @@ go mod tidy
 go build -o appguard.exe ./cmd/appguard
 ```
 
-## Instalar como Windows Service
+## Instalar
 
 Executar como Administrador:
 
@@ -171,30 +201,33 @@ Ou manualmente:
 
 ```powershell
 .\appguard.exe install -config "C:\Program Files\AppGuard\appguard.json"
+.\appguard.exe enroll -config "C:\Program Files\AppGuard\appguard.json"
 .\appguard.exe start
 ```
 
-## Comandos operacionais
+## Comandos CLI
 
 ```text
-enable-all
-disable-all
-restart-all
-stop-all
+install
+uninstall
+start
+stop
+status
+version
+enroll
+controller
+run
 ```
 
-Podem ser aplicados:
-
-- globalmente;
-- por grupo;
-- por computador.
-
-## API v0.4
+## API v0.5
 
 ```text
+POST /api/v1/enroll
 POST /api/v1/heartbeat
 POST /api/v1/agent-events
+
 GET  /api/v1/commands/{agentId}
+POST /api/v1/commands/ack/{commandId}
 
 GET  /api/v1/admin/agents
 GET  /api/v1/admin/events
@@ -207,40 +240,39 @@ POST /api/v1/admin/group/{group}/{action}
 PUT  /api/v1/admin/agent-settings/{agentId}
 ```
 
-## Estrutura
+## SQLite
+
+Tabelas principais:
 
 ```text
-appguard/
-├── cmd/
-│   └── appguard/
-├── internal/
-│   ├── config/
-│   ├── control/
-│   ├── process/
-│   ├── service/
-│   ├── storage/
-│   └── watchdog/
-├── scripts/
-├── appguard.example.json
-├── VERSION
-├── go.mod
-└── README.md
+agents
+events
+commands
 ```
+
+A tabela `commands` armazena:
+
+- ID;
+- agente;
+- acção;
+- aplicação;
+- payload;
+- data de criação;
+- data de confirmação/entrega.
 
 ## Roadmap
 
-### v0.5
-
-- comandos persistentes em SQLite;
-- entrega de comandos depois de agentes offline voltarem;
-- instalador MSI/EXE;
-- enrollment automático;
-- identificação/versionamento dos agentes;
-- auto-update;
-- TLS interno;
-- autenticação por dispositivo.
-
 ### v0.6
+
+- autenticação individual por dispositivo;
+- enrollment com token dedicado;
+- TLS interno;
+- manifesto de actualização;
+- hash SHA-256 do binário;
+- assinatura/verificação de releases;
+- actualização controlada dos agentes.
+
+### v0.7
 
 - autenticação de utilizadores;
 - RBAC;
@@ -254,11 +286,11 @@ appguard/
 - hardening para produção;
 - políticas avançadas por grupo;
 - actualizações assinadas;
-- operação em dezenas ou centenas de máquinas;
+- gestão de dezenas ou centenas de máquinas;
 - alta disponibilidade opcional.
 
 ## Versão
 
 ```text
-AppGuard v0.4.0
+AppGuard v0.5.0
 ```
