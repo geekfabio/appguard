@@ -304,6 +304,25 @@ Recomendado:
 - evite redireccionamento de portas público;
 - use VPN ou controlo de acesso de rede para administração remota.
 
+## Identidade do agente e informação do computador
+
+Cada agente tem uma **identidade estável por máquina**, para que o mesmo computador nunca apareça duplicado no controlador. A identidade é, por ordem de prioridade:
+
+1. a variável de ambiente `APPGUARD_AGENT_ID` (se definida);
+2. o `agentId` do config (se preenchido explicitamente);
+3. o **MachineGuid do Windows** (`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`) — o valor por omissão.
+
+O MachineGuid é criado na instalação do Windows e **sobrevive a renomear o PC e a reinstalar o AppGuard**, por isso o agente mantém sempre a mesma linha no controlador. Fora do Windows, a identidade é o hostname.
+
+Além disso:
+
+- **Instância única por PC:** o agente toma um mutex global (`Global\AppGuard-Agent`); um segundo processo do agente no mesmo computador recusa-se a arrancar.
+- **Informação do computador:** cada heartbeat traz nome, versão do Windows, arquitectura, nº de CPUs, RAM, IPs, utilizador com sessão iniciada e uptime. O dashboard mostra o **nome do computador** como etiqueta principal (e o ID por baixo); a página de cada agente tem um painel **Sistema** com estes dados.
+
+> Clonar uma máquina com sysprep gera um novo MachineGuid (passa a ser, corretamente, um computador novo). Clonar **sem** sysprep mantém o mesmo GUID — nesse caso os clones partilham identidade; use sempre sysprep ao criar imagens.
+>
+> Como a identidade passou a ser o MachineGuid, agentes de versões anteriores (identificados pelo nome do PC) aparecem como linhas antigas offline depois da atualização. Remova-as no dashboard (botão **Remover**).
+
 ## PowerShell remoto
 
 Na página **PowerShell** do dashboard (botão no topo) pode enviar um script para **todos os agentes**, para um **grupo** ou para **um agente**. O agente executa o script com o Windows PowerShell (`-NoProfile -NonInteractive -ExecutionPolicy Bypass`), captura a saída (stdout+stderr) e devolve-a ao controlador, que a mostra por agente com o estado (OK / Falhou / Pendente).

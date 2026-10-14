@@ -15,6 +15,7 @@ import (
 	"appguard/internal/buildinfo"
 	"appguard/internal/config"
 	proc "appguard/internal/process"
+	"appguard/internal/sysinfo"
 	"appguard/internal/update"
 	"appguard/internal/watchdog"
 )
@@ -125,6 +126,7 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	settings := w.Settings()
 	status := w.Status()
 	status["settings"] = settings
+	status["machine"] = sysinfo.Collect()
 
 	hb := Heartbeat{
 		AgentID: cfg.AgentID,

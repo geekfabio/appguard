@@ -19,6 +19,7 @@ import (
 	"appguard/internal/control"
 	"appguard/internal/service"
 	"appguard/internal/setup"
+	"appguard/internal/singleton"
 	"appguard/internal/update"
 	"appguard/internal/watchdog"
 )
@@ -162,6 +163,18 @@ func newServiceUpdater() *update.Updater {
 func runAgent(ctx context.Context, configPath string, upd *update.Updater) error {
 	abs, _ := filepath.Abs(configPath)
 	slog.Info("starting AppGuard", "config", abs)
+
+	// Refuse to start a second agent on the same computer.
+	release, err := singleton.Acquire(serviceName + "-Agent")
+	if err != nil {
+		if err == singleton.ErrAlreadyRunning {
+			slog.Warn("another AppGuard agent is already running on this computer; exiting")
+			return nil
+		}
+		slog.Warn("single-instance lock unavailable; continuing", "error", err)
+	} else {
+		defer release()
+	}
 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()

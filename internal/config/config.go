@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"appguard/internal/sysinfo"
 )
 
 type Config struct {
@@ -85,8 +87,16 @@ func Normalize(cfg *Config) {
 }
 
 func applyDefaults(cfg *Config) {
-	host, _ := os.Hostname()
-	if host != "" { cfg.AgentID = host }
+	// Agent identity must be stable per machine so a renamed PC or an
+	// AppGuard reinstall does not appear as a new (duplicate) agent, and two
+	// machines that happen to share a Windows name do not collide. Priority:
+	// explicit env override, then a value already in the config, then the
+	// stable machine id (Windows MachineGuid; hostname elsewhere).
+	if env := strings.TrimSpace(os.Getenv("APPGUARD_AGENT_ID")); env != "" {
+		cfg.AgentID = env
+	} else if cfg.AgentID == "" {
+		cfg.AgentID = sysinfo.MachineID()
+	}
 	if cfg.Role == "" { cfg.Role = "agent" }
 	if cfg.Role != "agent" && cfg.Role != "controller" { cfg.Role = "agent" }
 	if cfg.Group == "" { cfg.Group = "default" }
