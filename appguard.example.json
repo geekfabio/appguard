@@ -19,7 +19,8 @@
       "enabled": true,
       "autoRestart": true,
       "maxRetries": 5,
-      "resetAfterSeconds": 300
+      "resetAfterSeconds": 300,
+      "startupDelaySeconds": 60
     }
   ]
 }
