@@ -1,0 +1,71 @@
+name: Release AppGuard
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.repository == 'geekfabio/appguard'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(tr -d '\r\n ' < VERSION)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+
+      - name: Resolve dependencies
+        run: go mod tidy
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build Windows amd64
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist/package/scripts
+          go build -trimpath -ldflags="-s -w" -o dist/appguard.exe ./cmd/appguard
+          cp dist/appguard.exe dist/package/appguard.exe
+          cp appguard.example.json dist/package/appguard.example.json
+          cp appguard.controller.example.json dist/package/appguard.controller.example.json
+          cp scripts/*.ps1 dist/package/scripts/
+          cp README.md dist/package/README.md
+          cp VERSION dist/package/VERSION
+
+      - name: Package ZIP
+        run: |
+          cd dist/package
+          zip -r "../AppGuard-v${{ steps.version.outputs.version }}-windows-amd64.zip" .
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/appguard.exe "dist/AppGuard-v${VERSION}-windows-amd64.zip" --clobber
+          else
+            gh release create "$TAG" dist/appguard.exe "dist/AppGuard-v${VERSION}-windows-amd64.zip" --target "$GITHUB_SHA" --title "AppGuard v${VERSION}" --notes-file RELEASE_NOTES.md
+          fi
