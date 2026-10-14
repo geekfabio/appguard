@@ -227,6 +227,7 @@ func (w *Watchdog) Status() map[string]any {
 
 	return map[string]any{
 		"agentId": w.cfg.AgentID,
+		"role": w.cfg.Role,
 		"enabled": w.cfg.Enabled,
 		"apps": apps,
 	}
