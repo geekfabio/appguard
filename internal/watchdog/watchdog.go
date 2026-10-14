@@ -43,6 +43,38 @@ func (w *Watchdog) Events() <-chan Event {
 	return w.events
 }
 
+func (w *Watchdog) Settings() config.AgentSettings {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	apps := append([]config.Application(nil), w.cfg.Apps...)
+	return config.AgentSettings{
+		Group:      w.cfg.Group,
+		CheckEvery: w.cfg.CheckEvery,
+		Apps:       apps,
+	}
+}
+
+func (w *Watchdog) ApplySettings(settings config.AgentSettings) error {
+	config.NormalizeSettings(&settings)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.cfg.Group = settings.Group
+	w.cfg.CheckEvery = settings.CheckEvery
+	w.cfg.Apps = append([]config.Application(nil), settings.Apps...)
+	w.retries = make(map[string]int)
+	w.stableSince = make(map[string]time.Time)
+	w.pending = make(map[string]bool)
+
+	if err := config.Save(w.configPath, w.cfg); err != nil {
+		return err
+	}
+	w.emit("configuration-updated", "", "configuração remota aplicada")
+	return nil
+}
+
 func (w *Watchdog) emit(action, appName, detail string) {
 	e := Event{
 		Time: time.Now(),
@@ -58,15 +90,21 @@ func (w *Watchdog) emit(action, appName, detail string) {
 }
 
 func (w *Watchdog) Run(ctx context.Context) error {
-	t := time.NewTicker(time.Duration(w.cfg.CheckEvery) * time.Second)
-	defer t.Stop()
-
 	w.checkAll()
 	for {
+		w.mu.RLock()
+		seconds := w.cfg.CheckEvery
+		w.mu.RUnlock()
+		if seconds <= 0 {
+			seconds = 10
+		}
+
+		timer := time.NewTimer(time.Duration(seconds) * time.Second)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return nil
-		case <-t.C:
+		case <-timer.C:
 			w.checkAll()
 		}
 	}
