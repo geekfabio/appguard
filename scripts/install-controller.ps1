@@ -25,21 +25,25 @@ if (-not (Test-Path $SourceExe)) {
   throw "Nao foi encontrado: $SourceExe"
 }
 
-if (-not (Test-Path $ConfigSource)) {
-  throw "Nao foi encontrado o ficheiro de configuracao: $ConfigSource"
-}
+$hasConfig = Test-Path $ConfigSource
+$config = $null
 
-try {
-  $config = Get-Content $ConfigSource -Raw | ConvertFrom-Json
-} catch {
-  throw "JSON de configuracao invalido: $($_.Exception.Message)"
-}
+if ($hasConfig) {
+  try {
+    $config = Get-Content $ConfigSource -Raw | ConvertFrom-Json
+  } catch {
+    throw "JSON de configuracao invalido: $($_.Exception.Message)"
+  }
 
-if ($config.role -ne "controller") {
-  throw "Este instalador e destinado ao Controller. O campo role deve ser controller."
+  if ($config.role -ne "controller") {
+    throw "Este instalador e destinado ao Controller. O campo role deve ser controller."
+  }
 }
 
 Write-Host "A instalar AppGuard Controller..." -ForegroundColor Cyan
+if (-not $hasConfig) {
+  Write-Host "Nenhum JSON inicial encontrado. O wizard visual sera aberto."
+}
 Write-Host "Destino: $InstallDir"
 Write-Host "Porta do dashboard/API: $Port"
 
@@ -80,7 +84,32 @@ if ($null -ne $existingService) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 Copy-Item $SourceExe $TargetExe -Force
-Copy-Item $ConfigSource $TargetConfig -Force
+
+if ($hasConfig) {
+  Copy-Item $ConfigSource $TargetConfig -Force
+} else {
+  Write-Host "A abrir configuracao visual do AppGuard Controller..."
+  Push-Location $InstallDir
+  try {
+    .\appguard.exe setup -config $TargetConfig
+  } finally {
+    Pop-Location
+  }
+
+  if (-not (Test-Path $TargetConfig)) {
+    throw "A configuracao nao foi criada. Instalacao cancelada."
+  }
+
+  try {
+    $config = Get-Content $TargetConfig -Raw | ConvertFrom-Json
+  } catch {
+    throw "O JSON criado pelo wizard e invalido: $($_.Exception.Message)"
+  }
+
+  if ($config.role -ne "controller") {
+    throw "O wizard nao foi concluido como Controller."
+  }
+}
 
 Push-Location $InstallDir
 try {
