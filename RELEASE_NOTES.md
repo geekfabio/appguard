@@ -1,29 +1,24 @@
-# AppGuard v1.1.1
+# AppGuard v1.1.2
 
-This release removes the shared token requirement.
+This release removes persistent log/event storage from SQLite.
 
 ## Changes
 
-- Controller API no longer requires a Bearer token.
-- Agents no longer send an Authorization header.
-- First-run setup no longer asks for a token.
-- JSON configuration examples no longer contain a token.
-- The dashboard no longer asks for a token.
-- Enrollment works without authentication.
-- Controller and Agent communication remains limited to AppGuard's structured endpoints and commands.
+- Removed the persistent `events` table from SQLite.
+- Existing `events` tables are dropped automatically when the Controller starts.
+- Agent events and watchdog events are kept only in memory.
+- The dashboard still shows recent events while the Controller is running.
+- Recent events disappear after the Controller restarts.
+- SQLite is now used only for operational state such as agents and pending commands.
 
-## Security model
+## Why
 
-AppGuard v1.1.1 is intended for trusted LAN environments.
+This keeps the AppGuard database smaller and avoids retaining historical logs on disk.
 
-Because the API is now unauthenticated:
+## Unchanged
 
-- restrict TCP port 8443 to the internal subnet using Windows Firewall;
-- do not expose the Controller directly to the public Internet;
-- use a VPN or network-level access control for remote administration.
-
-The application still does not expose arbitrary PowerShell, CMD, or shell execution.
-
-## First-run setup
-
-Run `appguard.exe` without an `appguard.json` and the visual setup wizard opens automatically. Choose Controller or Agent and select the application executable with the native Windows picker.
+- Agent status remains available.
+- Pending offline commands remain persistent.
+- ACK command delivery remains persistent.
+- Controller local watchdog behavior remains unchanged.
+- First-run setup remains unchanged.
