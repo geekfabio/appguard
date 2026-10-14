@@ -1,30 +1,31 @@
 # AppGuard
 
-> **Versão actual: v0.3.0**
+> **Versão actual: v0.4.0**
 
-AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local e controlo centralizado de múltiplos computadores através da LAN.
+AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
-## Novidades da v0.3.0
+## Novidades da v0.4.0
 
-- persistência SQLite no controlador;
-- computadores mantidos após reinício do controlador;
-- histórico persistente de eventos;
-- registo de crashes dos processos;
-- histórico de retries;
-- eventos de reinício bem-sucedido/falhado;
-- contador de retries por processo;
-- página individual por computador;
-- base de dados configurável através de `controller.databasePath`;
-- dashboard actualizado para mostrar falhas recentes;
-- compatibilidade com a configuração da v0.2.
+- pesquisa de computadores por nome ou grupo;
+- filtro por grupo;
+- filtro Online/Offline;
+- edição remota da configuração de cada agente;
+- alteração remota do grupo;
+- alteração remota do intervalo de verificação;
+- gestão remota da lista de aplicações supervisionadas;
+- aplicação da nova configuração sem reiniciar o serviço;
+- persistência automática da configuração recebida no `appguard.json`;
+- heartbeat passa a incluir o snapshot da configuração do agente;
+- página individual por computador actualizada;
+- visualização do estado `restartPending`.
 
-O controlador utiliza `modernc.org/sqlite`, uma implementação SQLite em Go que não requer CGO.
+> Os comandos remotos continuam em memória no controlador nesta versão. A persistência dos comandos para agentes offline passa para a v0.5.
 
 ## Arquitectura
 
 ```text
                     APPGUARD CONTROLLER
-                   Windows / PC Central
+                  Dashboard + SQLite
                   http://IP:8443
                          │
                     appguard.db
@@ -36,14 +37,14 @@ O controlador utiliza `modernc.org/sqlite`, uma implementação SQLite em Go que
           Agent       Agent       Agent
              │           │           │
              ▼           ▼           ▼
-          app.exe      app.exe      app.exe
+       processos      processos    processos
 ```
 
-Cada agente continua a supervisionar localmente os seus processos mesmo quando o controlador está desligado.
+Cada agente continua a supervisionar localmente os seus processos mesmo que o controlador esteja desligado.
 
 ## Dashboard
 
-Iniciar:
+Iniciar o controlador:
 
 ```powershell
 .\appguard.exe controller -config .\appguard.json
@@ -55,87 +56,27 @@ Abrir:
 http://192.168.1.10:8443
 ```
 
-O dashboard apresenta:
+O dashboard permite:
 
-- total de computadores;
-- Online/Offline;
-- processos activos;
-- falhas recentes;
-- retries;
-- grupos;
-- última comunicação;
-- histórico persistente;
-- acções por computador.
+- consultar computadores Online/Offline;
+- pesquisar PCs;
+- filtrar por grupo;
+- filtrar por estado;
+- consultar processos activos;
+- consultar retries e falhas;
+- reiniciar/parar agentes;
+- abrir a página individual de cada PC.
 
-Clicar no nome de um computador abre a respectiva página de detalhe.
+## Configuração remota
 
-## SQLite
+Na página individual do computador é apresentada a configuração estruturada actual.
 
-Por defeito:
-
-```json
-{
-  "controller": {
-    "databasePath": "appguard.db"
-  }
-}
-```
-
-A base de dados contém actualmente:
-
-```text
-agents
-events
-```
-
-São persistidos:
-
-- último heartbeat;
-- grupo do agente;
-- estado dos processos;
-- crashes;
-- retries;
-- falhas de restart;
-- restarts bem sucedidos;
-- comandos administrativos;
-- reconexões.
-
-## Eventos enviados pelos agentes
-
-```text
-process-crash
-process-check-failed
-retry-scheduled
-retry-limit-reached
-restart-success
-restart-failed
-```
-
-## Política de recuperação
-
-```text
-Retry 1 → 5s
-Retry 2 → 10s
-Retry 3 → 30s
-Retry 4 → 60s
-Retry 5 → 120s
-```
-
-## Configuração
+Exemplo:
 
 ```json
 {
-  "agentId": "PC-001",
   "group": "Loja-01",
-  "enabled": true,
   "checkEverySeconds": 10,
-  "controller": {
-    "url": "http://192.168.1.10:8443",
-    "token": "ALTERAR-PARA-UM-TOKEN-SEGURO",
-    "pollEverySeconds": 5,
-    "listen": ":8443",
-    "databasePath": "appguard.db"
-  },
   "applications": [
     {
       "name": "ProcessoPrincipal",
@@ -150,6 +91,67 @@ Retry 5 → 120s
 }
 ```
 
+Depois de guardar:
+
+1. o controlador coloca a configuração na fila do agente;
+2. o agente recebe `apply-settings`;
+3. os valores são validados;
+4. o watchdog actualiza a configuração em memória;
+5. o ficheiro `appguard.json` é actualizado;
+6. o novo intervalo passa a ser usado automaticamente.
+
+## Segurança
+
+A configuração remota é limitada a campos estruturados do AppGuard.
+
+Não existe endpoint para execução arbitrária de:
+
+- PowerShell;
+- CMD;
+- scripts;
+- comandos shell.
+
+Isto reduz significativamente o risco de utilização indevida do agente.
+
+## Política de recuperação
+
+```text
+5s → 10s → 30s → 60s → 120s
+```
+
+Uma aplicação não pode ter vários restarts concorrentes. O estado `restartPending` impede tentativas duplicadas.
+
+O contador de retries é reposto depois do período estável definido em:
+
+```json
+{
+  "resetAfterSeconds": 300
+}
+```
+
+## Persistência SQLite
+
+Actualmente são persistidos:
+
+- agentes;
+- último heartbeat;
+- estado dos processos;
+- grupo;
+- eventos;
+- crashes;
+- retries;
+- falhas e sucessos de restart.
+
+Base predefinida:
+
+```json
+{
+  "controller": {
+    "databasePath": "appguard.db"
+  }
+}
+```
+
 ## Compilar
 
 ```powershell
@@ -157,7 +159,7 @@ go mod tidy
 go build -o appguard.exe ./cmd/appguard
 ```
 
-## Instalar como serviço
+## Instalar como Windows Service
 
 Executar como Administrador:
 
@@ -165,14 +167,14 @@ Executar como Administrador:
 .\scripts\install.ps1 -ConfigSource .\appguard.json
 ```
 
-Ou:
+Ou manualmente:
 
 ```powershell
 .\appguard.exe install -config "C:\Program Files\AppGuard\appguard.json"
 .\appguard.exe start
 ```
 
-## Comandos
+## Comandos operacionais
 
 ```text
 enable-all
@@ -181,9 +183,13 @@ restart-all
 stop-all
 ```
 
-Podem ser aplicados globalmente, por grupo ou por máquina.
+Podem ser aplicados:
 
-## API
+- globalmente;
+- por grupo;
+- por computador.
+
+## API v0.4
 
 ```text
 POST /api/v1/heartbeat
@@ -197,30 +203,16 @@ GET  /api/v1/admin/agent-detail/{agentId}
 POST /api/v1/admin/broadcast/{action}
 POST /api/v1/admin/agent/{agentId}/{action}
 POST /api/v1/admin/group/{group}/{action}
+
+PUT  /api/v1/admin/agent-settings/{agentId}
 ```
-
-## Segurança
-
-A v0.3.0 continua direccionada sobretudo a redes LAN controladas.
-
-Antes de exposição fora da rede interna:
-
-1. HTTPS/TLS;
-2. autenticação individual dos agentes;
-3. tokens rotativos;
-4. firewall;
-5. autenticação real no dashboard;
-6. assinatura do binário;
-7. RBAC;
-8. auditoria completa.
-
-O AppGuard não implementa execução remota arbitrária de PowerShell/CMD.
 
 ## Estrutura
 
 ```text
 appguard/
-├── cmd/appguard/
+├── cmd/
+│   └── appguard/
 ├── internal/
 │   ├── config/
 │   ├── control/
@@ -237,36 +229,36 @@ appguard/
 
 ## Roadmap
 
-### v0.4
-
-- gestão visual de grupos;
-- gestão remota das aplicações;
-- filtros e pesquisa;
-- estatísticas de uptime;
-- retenção configurável de eventos;
-- comandos persistentes;
-- configuração remota.
-
 ### v0.5
 
+- comandos persistentes em SQLite;
+- entrega de comandos depois de agentes offline voltarem;
 - instalador MSI/EXE;
 - enrollment automático;
+- identificação/versionamento dos agentes;
 - auto-update;
-- versionamento de agentes;
-- distribuição de configurações;
-- TLS interno.
+- TLS interno;
+- autenticação por dispositivo.
+
+### v0.6
+
+- autenticação de utilizadores;
+- RBAC;
+- estatísticas de uptime;
+- retenção configurável de eventos;
+- relatórios;
+- auditoria administrativa.
 
 ### v1.0
 
-- autenticação e RBAC;
-- políticas por grupo;
-- auditoria completa;
+- hardening para produção;
+- políticas avançadas por grupo;
 - actualizações assinadas;
-- operação em dezenas/centenas de máquinas;
+- operação em dezenas ou centenas de máquinas;
 - alta disponibilidade opcional.
 
 ## Versão
 
 ```text
-AppGuard v0.3.0
+AppGuard v0.4.0
 ```
