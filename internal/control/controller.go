@@ -65,6 +65,49 @@ func RunController(cfg *config.Config) error {
 		_, _ = w.Write([]byte(page))
 	})
 
+	mux.HandleFunc("/api/v1/enroll", st.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req Enrollment
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.AgentID == "" {
+			http.Error(w, "missing agentId", http.StatusBadRequest)
+			return
+		}
+		if req.Group == "" {
+			req.Group = "default"
+		}
+
+		status := map[string]any{
+			"version": req.Version,
+			"enrolled": true,
+			"apps": []any{},
+		}
+		if err := st.db.UpsertAgent(req.AgentID, req.Group, time.Now(), status); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = st.db.AddEvent(storage.Event{
+			Time: time.Now(),
+			AgentID: req.AgentID,
+			Group: req.Group,
+			Action: "agent-enrolled",
+			Detail: "Agente registado manualmente no controlador",
+		})
+		writeJSON(w, map[string]any{
+			"enrolled": true,
+			"agentId": req.AgentID,
+			"version": req.Version,
+		})
+	}))
+
 	mux.HandleFunc("/api/v1/heartbeat", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -85,6 +128,12 @@ func RunController(cfg *config.Config) error {
 		}
 
 		hb.Timestamp = time.Now()
+		if hb.Status == nil {
+			hb.Status = map[string]any{}
+		}
+		hb.Status["version"] = hb.Version
+		hb.Status["settings"] = hb.Settings
+
 		previous, previousErr := st.db.GetAgent(hb.AgentID)
 		if err := st.db.UpsertAgent(hb.AgentID, hb.Group, hb.Timestamp, hb.Status); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -472,7 +521,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><h1>AppGuard Control Center <span class="muted">v0.4.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
+<header><h1>AppGuard Control Center <span class="muted">v0.5.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="token" type="password" placeholder="Token Bearer"><button class="btn" onclick="saveToken()">Guardar token</button></div>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
@@ -490,7 +539,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 <button class="btn warn" onclick="broadcast('disable-all')">Desactivar watchdog</button>
 </div>
 <section class="panel"><h2>Agentes</h2>
-<table><thead><tr><th>Computador</th><th>Grupo</th><th>Estado</th><th>Processos</th><th>Retries</th><th>Último contacto</th><th>Acções</th></tr></thead><tbody id="agents"></tbody></table>
+<table><thead><tr><th>Computador</th><th>Grupo</th><th>Versão</th><th>Estado</th><th>Processos</th><th>Retries</th><th>Último contacto</th><th>Acções</th></tr></thead><tbody id="agents"></tbody></table>
 </section>
 <section class="panel"><h2>Eventos persistentes</h2><div class="events" id="events"></div></section>
 </main>
@@ -507,7 +556,7 @@ const q=(document.getElementById('search')?.value||'').toLowerCase();
 const group=document.getElementById('groupFilter')?.value||'';
 const state=document.getElementById('stateFilter')?.value||'';
 const agents=cachedAgents.filter(a=>(!q||(a.agentId+' '+a.group).toLowerCase().includes(q))&&(!group||a.group===group)&&(!state||(state==='online')===a.online));
-document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'stop-all\\')">Parar</button></td></tr>'}).join('');
+document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'stop-all\\')">Parar</button></td></tr>'}).join('');
 }
 async function refresh(){try{
 const [agents,events]=await Promise.all([api('/api/v1/admin/agents'),api('/api/v1/admin/events')]);
