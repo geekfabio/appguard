@@ -1,8 +1,8 @@
 # AppGuard
 
-> **Versão actual: v1.1.1**
+> **Versão actual: v1.1.2**
 
-AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
+AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e SQLite apenas para estado operacional.
 
 ## Novidades da v1.0.0
 
@@ -132,7 +132,7 @@ O workflow é executado em pushes para `main`, pull requests e tags `v*`.
                          │
                     appguard.db
                          │
-        agentes + eventos + comandos pendentes
+        agentes + comandos pendentes
                          │
              ┌───────────┼───────────┐
              │           │           │
@@ -256,7 +256,7 @@ GET  /api/v1/commands/{agentId}
 POST /api/v1/commands/ack/{commandId}
 
 GET  /api/v1/admin/agents
-GET  /api/v1/admin/events
+GET  /api/v1/admin/events  # eventos temporários em memória
 GET  /api/v1/admin/agent-detail/{agentId}
 
 POST /api/v1/admin/broadcast/{action}
@@ -272,13 +272,14 @@ GET  /readyz
 
 ## SQLite
 
-Tabelas principais:
+Tabelas persistentes principais:
 
 ```text
 agents
-events
 commands
 ```
+
+Os logs/eventos **não são persistidos**. O dashboard mantém apenas os eventos recentes em memória e eles desaparecem quando o controlador reinicia.
 
 A tabela `commands` armazena:
 
@@ -322,5 +323,5 @@ A tabela `commands` armazena:
 ## Versão
 
 ```text
-AppGuard v1.1.1
+AppGuard v1.1.2
 ```
