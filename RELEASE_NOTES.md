@@ -1,48 +1,40 @@
-# AppGuard v1.0.0
+# AppGuard v1.0.1
 
-Primeira versão estável do AppGuard para supervisão centralizada de processos Windows em rede local.
+Patch de comportamento de inicialização.
 
-## Principais novidades
+## Novidade
 
-- **Controller Node completo**: o computador controlador também funciona como agente e watchdog local.
-- O controlador supervisiona os seus próprios processos e aparece no dashboard.
-- Suporte explícito a `role: "controller"` e `role: "agent"`.
-- Controlo individual por aplicação: activar, desactivar, parar e reiniciar.
-- Comandos persistentes em SQLite com entrega a máquinas offline.
-- ACK de comandos depois da tentativa de execução.
-- Configuração remota estruturada de grupos, intervalo e aplicações.
-- Enrollment de agentes.
-- Versionamento dos agentes visível no dashboard.
-- Health checks: `/healthz` e `/readyz`.
-- Histórico de falhas, retries e restarts.
-- Retry progressivo: 5s → 10s → 30s → 60s → 120s.
-- Protecção contra múltiplos restarts concorrentes.
-- Build automatizado para Windows amd64.
+Foi adicionado um atraso inicial configurável por aplicação:
+
+```json
+{
+  "startupDelaySeconds": 60
+}
+```
+
+Por defeito, cada aplicação supervisionada aguarda **60 segundos** após o arranque do AppGuard antes da primeira tentativa de inicialização.
+
+Durante este período:
+
+- o AppGuard não inicia a aplicação;
+- não consome retries;
+- não agenda restarts;
+- continua activo e pode comunicar com o controlador.
+
+Ao terminar o atraso, se o processo não estiver a correr, o AppGuard tenta iniciá-lo imediatamente.
+
+Depois da inicialização, as falhas passam a seguir a política normal:
+
+```text
+5s → 10s → 30s → 60s → 120s
+```
+
+O campo é configurável individualmente por aplicação e também pode ser alterado através da configuração remota estruturada.
 
 ## Controller Node
 
-O controlador pode agora executar simultaneamente Dashboard/API, SQLite, watchdog local, heartbeat, cliente de comandos e supervisão dos processos configurados no próprio PC.
+O mesmo comportamento aplica-se aos processos locais supervisionados pelo computador controlador.
 
-Use `appguard.controller.example.json` com `"role": "controller"`.
+## Compatibilidade
 
-## Artefactos
-
-- `appguard.exe` — binário Windows amd64.
-- `AppGuard-v1.0.0-windows-amd64.zip` — pacote com binário, configurações exemplo e scripts.
-
-## Requisitos
-
-- Windows 10/11 ou Windows Server.
-- Privilégios de Administrador para instalar como Windows Service.
-- Rede LAN entre controlador e agentes.
-- Go 1.24+ apenas para compilar a partir do código-fonte.
-
-## Instalação rápida
-
-```powershell
-.\scripts\install.ps1 -ConfigSource .\appguard.json
-```
-
-## Segurança
-
-A v1.0 não permite execução arbitrária de PowerShell, CMD ou scripts remotos. Para exposição fora de uma LAN controlada, recomenda-se TLS/mTLS e autenticação individual por dispositivo.
+Configurações antigas sem `startupDelaySeconds` recebem automaticamente o valor padrão de **60 segundos**.
