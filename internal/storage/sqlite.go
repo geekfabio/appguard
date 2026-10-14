@@ -52,6 +52,8 @@ func (d *DB) migrate() error {
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 
+DROP TABLE IF EXISTS events;
+
 CREATE TABLE IF NOT EXISTS agents (
 	agent_id TEXT PRIMARY KEY,
 	group_name TEXT NOT NULL,
