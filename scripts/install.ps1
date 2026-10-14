@@ -18,6 +18,13 @@ Push-Location $InstallDir
 try {
   .\appguard.exe install -config "$InstallDir\appguard.json"
   sc.exe failure AppGuard reset= 3600 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+  try {
+    .\appguard.exe enroll -config "$InstallDir\appguard.json"
+    Write-Host "Agente registado no controlador."
+  } catch {
+    Write-Warning "Enrollment não concluído: $($_.Exception.Message)"
+  }
+
   .\appguard.exe start
 } finally {
   Pop-Location
