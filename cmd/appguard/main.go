@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"appguard/internal/buildinfo"
@@ -56,9 +57,9 @@ func main() {
 		fmt.Println("AppGuard enrolled:", cfg.AgentID)
 		return
 	case "controller":
-		cfg, err := config.Load(configPath)
-		must(err)
-		must(control.RunController(cfg))
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		must(runControllerNode(ctx, configPath))
 		return
 	case "run":
 	default:
@@ -70,6 +71,13 @@ func main() {
 	must(err)
 	if isService {
 		must(service.Run(serviceName, func(ctx context.Context) error {
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return err
+			}
+			if cfg.Role == "controller" {
+				return runControllerNode(ctx, configPath)
+			}
 			return runAgent(ctx, configPath)
 		}))
 		return
@@ -105,6 +113,49 @@ func runAgent(ctx context.Context, configPath string) error {
 	w := watchdog.New(cfg, configPath)
 	if cfg.Controller.URL != "" { go control.RunAgentClient(ctx, cfg, w) }
 	return w.Run(ctx)
+}
+
+
+func runControllerNode(ctx context.Context, configPath string) error {
+	abs, _ := filepath.Abs(configPath)
+	slog.Info("starting AppGuard controller node", "config", abs)
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	cfg.Role = "controller"
+
+	if cfg.Controller.URL == "" {
+		listen := cfg.Controller.Listen
+		if listen == "" {
+			listen = ":8443"
+		}
+		if strings.HasPrefix(listen, ":") {
+			cfg.Controller.URL = "http://127.0.0.1" + listen
+		} else {
+			cfg.Controller.URL = "http://" + listen
+		}
+	}
+
+	w := watchdog.New(cfg, configPath)
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- control.RunController(cfg)
+	}()
+	go control.RunAgentClient(ctx, cfg, w)
+
+	go func() {
+		errCh <- w.Run(ctx)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
 
 func must(err error) {
