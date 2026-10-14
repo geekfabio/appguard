@@ -113,12 +113,24 @@ func Run(ctx context.Context, configPath string) error {
 			return
 		}
 
-		writeJSON(w, map[string]any{
+		response := map[string]any{
 			"saved": true,
 			"configPath": configPath,
 			"agentId": cfg.AgentID,
 			"role": cfg.Role,
-		})
+		}
+
+		if cfg.Role == "controller" {
+			agentTemplatePath, controllerURL, err := saveAgentTemplate(configPath, cfg)
+			if err != nil {
+				http.Error(w, "controller saved, but agent template failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			response["agentTemplatePath"] = agentTemplatePath
+			response["controllerURL"] = controllerURL
+		}
+
+		writeJSON(w, response)
 
 		select {
 		case done <- nil:
@@ -150,6 +162,70 @@ func Run(ctx context.Context, configPath string) error {
 		_ = server.Shutdown(shutdownCtx)
 		return err
 	}
+}
+
+func controllerReachableURL(port string) string {
+	host, _ := os.Hostname()
+	fallback := host
+	if fallback == "" {
+		fallback = "127.0.0.1"
+	}
+
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+					continue
+				}
+				if ip.IsPrivate() {
+					return "http://" + ip.String() + port
+				}
+			}
+		}
+	}
+
+	return "http://" + fallback + port
+}
+
+func saveAgentTemplate(configPath string, source *config.Config) (string, string, error) {
+	controllerURL := controllerReachableURL(":8443")
+	templatePath := filepath.Join(filepath.Dir(configPath), "appguard.agent.json")
+
+	apps := append([]config.Application(nil), source.Apps...)
+	agentCfg := &config.Config{
+		AgentID: "",
+		Role: "agent",
+		Group: "default",
+		Enabled: true,
+		CheckEvery: source.CheckEvery,
+		Controller: config.Controller{
+			URL: controllerURL,
+			PollEverySeconds: source.Controller.PollEverySeconds,
+			Listen: ":8443",
+			DatabasePath: "appguard.db",
+		},
+		Apps: apps,
+	}
+
+	if err := config.Save(templatePath, agentCfg); err != nil {
+		return "", "", err
+	}
+	return templatePath, controllerURL, nil
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
@@ -303,7 +379,11 @@ async function save(){
  const d=await r.json();
  const s=document.getElementById('success');
  s.style.display='block';
- s.textContent='Configuration saved for '+d.agentId+'. You can close this browser window; AppGuard is starting.';
+ if(d.role==='controller' && d.agentTemplatePath){
+   s.innerHTML='Controller configuration saved for <b>'+esc(d.agentId)+'</b>.<br>Agent configuration generated at:<br><code>'+esc(d.agentTemplatePath)+'</code><br>Controller URL for agents: <code>'+esc(d.controllerURL)+'</code><br><br>Copy <b>appguard.agent.json</b> to each Agent PC and rename it to <b>appguard.json</b>.';
+  }else{
+   s.textContent='Configuration saved for '+d.agentId+'. You can close this browser window; AppGuard is starting.';
+  }
 }
 
 addApp();
