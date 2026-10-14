@@ -1,18 +1,25 @@
 package control
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+
+	"appguard/internal/config"
+)
 
 type Heartbeat struct {
-	AgentID   string         `json:"agentId"`
-	Group     string         `json:"group"`
-	Timestamp time.Time      `json:"timestamp"`
-	Status    map[string]any `json:"status"`
+	AgentID   string               `json:"agentId"`
+	Group     string               `json:"group"`
+	Timestamp time.Time            `json:"timestamp"`
+	Status    map[string]any       `json:"status"`
+	Settings  config.AgentSettings `json:"settings"`
 }
 
 type Command struct {
-	ID      string `json:"id"`
-	Action  string `json:"action"`
-	AppName string `json:"appName,omitempty"`
+	ID      string          `json:"id"`
+	Action  string          `json:"action"`
+	AppName string          `json:"appName,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type Event struct {
