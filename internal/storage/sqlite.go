@@ -241,13 +241,7 @@ func (d *DB) FetchPendingCommands(agentID string, limit int) ([]Command, error) 
 		limit = 50
 	}
 
-	tx, err := d.sql.Begin()
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	rows, err := tx.Query(`
+	rows, err := d.sql.Query(`
 SELECT id, agent_id, action, COALESCE(app_name, ''), COALESCE(payload_json, ''), created_at
 FROM commands
 WHERE agent_id = ? AND delivered_at IS NULL
@@ -257,15 +251,14 @@ LIMIT ?
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
 	var commands []Command
-	var ids []string
 	for rows.Next() {
 		var command Command
 		var payload string
 		var created string
 		if err := rows.Scan(&command.ID, &command.AgentID, &command.Action, &command.AppName, &payload, &created); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		if payload != "" {
@@ -273,22 +266,17 @@ LIMIT ?
 		}
 		command.Created, _ = time.Parse(time.RFC3339Nano, created)
 		commands = append(commands, command)
-		ids = append(ids, command.ID)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
+	return commands, rows.Err()
+}
 
-	deliveredAt := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, id := range ids {
-		if _, err := tx.Exec("UPDATE commands SET delivered_at = ? WHERE id = ?", deliveredAt, id); err != nil {
-			return nil, err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return commands, nil
+func (d *DB) AckCommand(commandID string) error {
+	_, err := d.sql.Exec(
+		"UPDATE commands SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+		time.Now().UTC().Format(time.RFC3339Nano),
+		commandID,
+	)
+	return err
 }
 
 func (d *DB) PendingCommandCount(agentID string) (int, error) {
