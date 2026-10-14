@@ -30,6 +30,15 @@ type Event struct {
 	Detail  string    `json:"detail,omitempty"`
 }
 
+type Command struct {
+	ID      string          `json:"id"`
+	AgentID string          `json:"agentId"`
+	Action  string          `json:"action"`
+	AppName string          `json:"appName,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Created time.Time       `json:"createdAt"`
+}
+
 func Open(path string) (*DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -75,6 +84,19 @@ ON events(agent_id, event_time DESC);
 
 CREATE INDEX IF NOT EXISTS idx_events_action_time
 ON events(action, event_time DESC);
+
+CREATE TABLE IF NOT EXISTS commands (
+	id TEXT PRIMARY KEY,
+	agent_id TEXT NOT NULL,
+	action TEXT NOT NULL,
+	app_name TEXT,
+	payload_json TEXT,
+	created_at TEXT NOT NULL,
+	delivered_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_commands_pending
+ON commands(agent_id, delivered_at, created_at);
 `
 	_, err := d.sql.Exec(schema)
 	return err
@@ -193,4 +215,87 @@ FROM events
 		result = append(result, e)
 	}
 	return result, rows.Err()
+}
+
+
+func (d *DB) QueueCommand(command Command) error {
+	if command.Created.IsZero() {
+		command.Created = time.Now()
+	}
+	_, err := d.sql.Exec(`
+INSERT INTO commands(id, agent_id, action, app_name, payload_json, created_at)
+VALUES(?, ?, ?, ?, ?, ?)
+`,
+		command.ID,
+		command.AgentID,
+		command.Action,
+		command.AppName,
+		string(command.Payload),
+		command.Created.UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (d *DB) FetchPendingCommands(agentID string, limit int) ([]Command, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`
+SELECT id, agent_id, action, COALESCE(app_name, ''), COALESCE(payload_json, ''), created_at
+FROM commands
+WHERE agent_id = ? AND delivered_at IS NULL
+ORDER BY created_at ASC
+LIMIT ?
+`, agentID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var commands []Command
+	var ids []string
+	for rows.Next() {
+		var command Command
+		var payload string
+		var created string
+		if err := rows.Scan(&command.ID, &command.AgentID, &command.Action, &command.AppName, &payload, &created); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if payload != "" {
+			command.Payload = json.RawMessage(payload)
+		}
+		command.Created, _ = time.Parse(time.RFC3339Nano, created)
+		commands = append(commands, command)
+		ids = append(ids, command.ID)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	deliveredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, id := range ids {
+		if _, err := tx.Exec("UPDATE commands SET delivered_at = ? WHERE id = ?", deliveredAt, id); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return commands, nil
+}
+
+func (d *DB) PendingCommandCount(agentID string) (int, error) {
+	var count int
+	err := d.sql.QueryRow(
+		"SELECT COUNT(*) FROM commands WHERE agent_id = ? AND delivered_at IS NULL",
+		agentID,
+	).Scan(&count)
+	return count, err
 }
