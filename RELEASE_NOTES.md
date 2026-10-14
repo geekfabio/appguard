@@ -1,40 +1,26 @@
-# AppGuard v1.1.3
+# AppGuard v1.1.4
 
-This release makes Controller setup automatically generate a ready-to-distribute Agent configuration.
+This release fixes Controller and Agent visibility in the dashboard.
 
-## Controller setup
+## Fixes
 
-After saving a Controller configuration, AppGuard generates:
+- The Controller now registers itself directly in the controller database at startup.
+- The Controller appears in the dashboard immediately, even before its first local heartbeat.
+- Fixed invalid dashboard JavaScript that could leave the agent table empty.
+- Fixed dashboard action buttons after the frontend refactor.
+- The Controller local Agent waits until the local Controller API is healthy before sending heartbeats.
+- Agent configuration generation now prefers the IPv4 address used by the system's primary/default route.
+- This avoids publishing Hyper-V, Docker, VPN or other virtual adapter addresses in `appguard.agent.json`.
+- The dashboard now shows the actual AppGuard version.
+
+## Expected result
+
+When the Controller starts, its own PC should appear in the dashboard immediately.
+
+Agents using the generated `appguard.agent.json` should appear after they can reach:
 
 ```text
-appguard.agent.json
+http://CONTROLLER-LAN-IP:8443
 ```
 
-beside the Controller's own `appguard.json`.
-
-The generated file includes:
-
-- Agent role;
-- automatically detected Controller LAN address;
-- Controller port 8443;
-- polling/check defaults;
-- monitored application definitions;
-- no token requirement.
-
-## Agent deployment
-
-Copy `appguard.agent.json` to an Agent machine, rename it to `appguard.json`, and place it beside `appguard.exe`.
-
-The Agent ID is automatically replaced with that machine's Windows computer name.
-
-If the local executable path differs on the Agent machine, run:
-
-```powershell
-.\appguard.exe setup
-```
-
-and select the correct executable using the native Windows picker.
-
-## Existing behavior
-
-The Controller continues to operate as its own Agent/watchdog and monitor local applications.
+The Agent ID continues to be the Windows computer name.
