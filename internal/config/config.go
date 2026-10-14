@@ -59,7 +59,8 @@ func Normalize(cfg *Config) {
 }
 
 func applyDefaults(cfg *Config) {
-	if cfg.AgentID == "" { host, _ := os.Hostname(); cfg.AgentID = host }
+	host, _ := os.Hostname()
+	if host != "" { cfg.AgentID = host }
 	if cfg.Role == "" { cfg.Role = "agent" }
 	if cfg.Role != "agent" && cfg.Role != "controller" { cfg.Role = "agent" }
 	if cfg.Group == "" { cfg.Group = "default" }
