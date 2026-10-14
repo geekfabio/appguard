@@ -1,0 +1,22 @@
+{
+  "agentId": "PC-001",
+  "enabled": true,
+  "checkEverySeconds": 10,
+  "controller": {
+    "url": "http://192.168.1.10:8443",
+    "token": "CHANGE-THIS-LONG-RANDOM-TOKEN",
+    "pollEverySeconds": 5,
+    "listen": ":8443"
+  },
+  "applications": [
+    {
+      "name": "ProcessoPrincipal",
+      "path": "C:\\Apps\\ProcessoPrincipal\\processo.exe",
+      "workingDirectory": "C:\\Apps\\ProcessoPrincipal",
+      "enabled": true,
+      "autoRestart": true,
+      "maxRetries": 5,
+      "resetAfterSeconds": 300
+    }
+  ]
+}
