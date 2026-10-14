@@ -21,8 +21,9 @@ const offlineAfter = 20 * time.Second
 
 type controllerState struct {
 	mu     sync.RWMutex
-	db     *storage.DB
-	events []Event
+	db      *storage.DB
+	events  []Event
+	release *agentRelease
 }
 
 type agentView struct {
@@ -31,6 +32,8 @@ type agentView struct {
 	LastSeen  time.Time      `json:"lastSeen"`
 	Online    bool           `json:"online"`
 	Status    map[string]any `json:"status"`
+	// Update is the agent's version state against the controller binary.
+	Update    string         `json:"update,omitempty"`
 }
 
 func RunController(cfg *config.Config) error {
@@ -42,6 +45,7 @@ func RunController(cfg *config.Config) error {
 
 	st := &controllerState{
 		db: db,
+		release: newAgentRelease(cfg.Controller.AgentUpdates),
 	}
 
 	if cfg.Role == "controller" {
@@ -164,6 +168,8 @@ func RunController(cfg *config.Config) error {
 		}
 		hb.Status["version"] = hb.Version
 		hb.Status["settings"] = hb.Settings
+		hb.Status["binarySha256"] = hb.BinarySHA256
+		hb.Status["selfUpdate"] = hb.SelfUpdate
 
 		previous, previousErr := st.db.GetAgent(hb.AgentID)
 		if err := st.db.UpsertAgent(hb.AgentID, hb.Group, hb.Timestamp, hb.Status); err != nil {
@@ -183,8 +189,14 @@ func RunController(cfg *config.Config) error {
 			})
 		}
 
+		if m := st.release.offer(hb); m != nil {
+			writeJSON(w, HeartbeatResponse{Update: m})
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
+
+	mux.HandleFunc("/api/v1/update/agent", st.auth(st.release.serve))
 
 	mux.HandleFunc("/api/v1/agent-events", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -301,6 +313,7 @@ func RunController(cfg *config.Config) error {
 				LastSeen: a.LastSeen,
 				Online: now.Sub(a.LastSeen) <= offlineAfter,
 				Status: a.Status,
+				Update: st.release.state(a.Status),
 			})
 		}
 		writeJSON(w, result)
@@ -332,6 +345,7 @@ func RunController(cfg *config.Config) error {
 				LastSeen: a.LastSeen,
 				Online: time.Since(a.LastSeen) <= offlineAfter,
 				Status: a.Status,
+				Update: st.release.state(a.Status),
 			},
 			"events": events,
 		})
@@ -681,13 +695,14 @@ let cachedAgents=[];
 async function api(path,options={}){options.headers={...(options.headers||{})};const r=await fetch(path,options);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
 async function commandAgent(id,action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function broadcast(action){if(!confirm('Executar '+action+' em todos os agentes?'))return;await api('/api/v1/admin/broadcast/'+action,{method:'POST'});setTimeout(refresh,500)}
+function updateBadge(u){return u==='pending'?' <span class="muted">⟳ a actualizar</span>':u==='manual'?' <span class="muted">(actualização manual)</span>':''}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 function renderAgents(){
 const q=(document.getElementById('search')?.value||'').toLowerCase();
 const group=document.getElementById('groupFilter')?.value||'';
 const state=document.getElementById('stateFilter')?.value||'';
 const agents=cachedAgents.filter(a=>(!q||(a.agentId+' '+a.group).toLowerCase().includes(q))&&(!group||a.group===group)&&(!state||(state==='online')===a.online));
-document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="restart-all">Reiniciar</button> <button class="btn warn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="stop-all">Parar</button></td></tr>'}).join('');
+document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+updateBadge(a.update)+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="restart-all">Reiniciar</button> <button class="btn warn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="stop-all">Parar</button></td></tr>'}).join('');
 }
 async function refresh(){try{
 const [agents,events]=await Promise.all([api('/api/v1/admin/agents'),api('/api/v1/admin/events')]);

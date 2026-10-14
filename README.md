@@ -206,6 +206,46 @@ Exemplo:
 
 A configuração remota também utiliza a fila de comandos persistentes.
 
+## Actualização automática dos agentes
+
+O controlador e os agentes usam o mesmo `appguard.exe`. **Basta actualizar o controlador**: ele passa a oferecer o seu próprio executável e os agentes instalados como serviço actualizam-se sozinhos.
+
+Fluxo:
+
+```text
+Agente envia heartbeat com o SHA-256 do seu appguard.exe
+        ↓
+Controller compara com o seu próprio binário; se for diferente responde {"update": {...}}
+        ↓
+Agente descarrega GET /api/v1/update/agent → appguard.new.exe
+        ↓
+Confirma tamanho + SHA-256 e executa "appguard.new.exe version"
+        ↓
+appguard.exe → appguard.exe.old, appguard.new.exe → appguard.exe
+        ↓
+Serviço reinicia com a nova versão (as aplicações supervisionadas não são paradas)
+        ↓
+Após 2 minutos saudável a comunicar com o controller → actualização confirmada, .old apagado
+```
+
+Rollback: se a nova versão arrancar mais de 3 vezes sem chegar aos 2 minutos saudável, o agente repõe o `appguard.exe.old`, reinicia e nunca mais tenta aquele binário. O resultado aparece nos eventos: `agent-update-started`, `agent-update-restarting`, `agent-update-installed`, `agent-update-failed`, `agent-update-rolled-back`.
+
+Configuração no controlador (opcional):
+
+```json
+"controller": {
+  "agentUpdates": { "enabled": true, "maxConcurrent": 5 }
+}
+```
+
+- `enabled` (padrão `true`): desligue para congelar as versões dos agentes.
+- `maxConcurrent` (padrão 5): quantos agentes podem actualizar ao mesmo tempo. Um agente que não conclua em 15 minutos liberta a vaga e só volta a tentar 1 hora depois.
+
+Notas:
+- O controlador é a versão desejada: se voltar a instalar uma versão anterior no controlador, os agentes acompanham.
+- Só agentes a correr como serviço Windows se actualizam. A coluna **Versão** do dashboard mostra `⟳ a actualizar` ou `(actualização manual)` para agentes anteriores a esta funcionalidade, que precisam de ser actualizados uma última vez à mão.
+- `appguard.exe install` passa a configurar a recuperação automática do serviço (reinício após falha), necessária para o rollback.
+
 ## Abertura de aplicações
 
 Campos opcionais por aplicação:

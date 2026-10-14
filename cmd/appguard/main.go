@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,13 +19,14 @@ import (
 	"appguard/internal/control"
 	"appguard/internal/service"
 	"appguard/internal/setup"
+	"appguard/internal/update"
 	"appguard/internal/watchdog"
 )
 
 const serviceName = "AppGuard"
 
 func main() {
-	command, configPath := parseArgs(os.Args[1:])
+	command, configPath, svcName := parseArgs(os.Args[1:])
 
 	switch command {
 	case "install":
@@ -65,6 +68,10 @@ func main() {
 		must(control.Enroll(cfg))
 		fmt.Println("AppGuard enrolled:", cfg.AgentID)
 		return
+	case "service-restart":
+		// Internal: launched detached by an agent that installed an update.
+		must(service.RestartWhenStopped(svcName, 2*time.Minute))
+		return
 	case "controller":
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
@@ -87,7 +94,7 @@ func main() {
 			if cfg.Role == "controller" {
 				return runControllerNode(ctx, configPath)
 			}
-			return runAgent(ctx, configPath)
+			return runAgent(ctx, configPath, newServiceUpdater())
 		}))
 		return
 	}
@@ -106,17 +113,23 @@ func main() {
 		must(runControllerNode(ctx, configPath))
 		return
 	}
-	must(runAgent(ctx, configPath))
+	must(runAgent(ctx, configPath, nil))
 }
 
-func parseArgs(args []string) (command, configPath string) {
+func parseArgs(args []string) (command, configPath, svcName string) {
 	command = "run"
 	configPath = defaultConfigPath()
+	svcName = serviceName
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-config", "--config":
 			if i+1 < len(args) {
 				configPath = args[i+1]
+				i++
+			}
+		case "-service", "--service":
+			if i+1 < len(args) {
+				svcName = args[i+1]
 				i++
 			}
 		default:
@@ -134,14 +147,62 @@ func defaultConfigPath() string {
 	return filepath.Join(filepath.Dir(exe), "appguard.json")
 }
 
-func runAgent(ctx context.Context, configPath string) error {
+// newServiceUpdater prepares self-update, which is only enabled for an
+// agent running as a Windows service. It returns nil when the running binary
+// cannot be inspected.
+func newServiceUpdater() *update.Updater {
+	u, err := update.New(buildinfo.Version)
+	if err != nil {
+		slog.Warn("self-update disabled", "error", err)
+		return nil
+	}
+	return u
+}
+
+func runAgent(ctx context.Context, configPath string, upd *update.Updater) error {
 	abs, _ := filepath.Abs(configPath)
 	slog.Info("starting AppGuard", "config", abs)
+
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	// If the restart helper cannot be launched, exit with an error so the
+	// service recovery actions start the (new or restored) binary instead.
+	var helperFailed atomic.Bool
+	restart := func() {
+		if err := service.ScheduleRestart(serviceName, configPath); err != nil {
+			slog.Error("could not schedule service restart; relying on service recovery", "error", err)
+			helperFailed.Store(true)
+		}
+		stop()
+	}
+	restartErr := func() error {
+		if helperFailed.Load() {
+			return errors.New("restart after self-update")
+		}
+		return nil
+	}
+
+	var opts control.AgentOptions
+	if upd != nil {
+		rolledBack, err := upd.Startup()
+		if err != nil {
+			slog.Error("self-update startup check failed", "error", err)
+		}
+		if rolledBack {
+			slog.Warn("updated binary kept failing; previous version restored, restarting")
+			restart()
+			return restartErr()
+		}
+		opts = control.AgentOptions{Updater: upd, Restart: restart}
+	}
+
 	cfg, err := config.Load(configPath)
 	if err != nil { return err }
 	w := watchdog.New(cfg, configPath)
-	if cfg.Controller.URL != "" { go control.RunAgentClient(ctx, cfg, w) }
-	return w.Run(ctx)
+	if cfg.Controller.URL != "" { go control.RunAgentClient(ctx, cfg, w, opts) }
+	if err := w.Run(ctx); err != nil { return err }
+	return restartErr()
 }
 
 
@@ -185,7 +246,7 @@ func runControllerNode(ctx context.Context, configPath string) error {
 			resp, err := client.Get(strings.TrimRight(cfg.Controller.URL, "/") + "/healthz")
 			if err == nil && resp.StatusCode == http.StatusOK {
 				_ = resp.Body.Close()
-				control.RunAgentClient(ctx, cfg, w)
+				control.RunAgentClient(ctx, cfg, w, control.AgentOptions{})
 				return
 			}
 			if resp != nil {

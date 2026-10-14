@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"appguard/internal/config"
+	"appguard/internal/update"
 )
 
 type Heartbeat struct {
@@ -14,6 +15,16 @@ type Heartbeat struct {
 	Timestamp time.Time            `json:"timestamp"`
 	Status    map[string]any       `json:"status"`
 	Settings  config.AgentSettings `json:"settings"`
+	// BinarySHA256 identifies the running appguard.exe; set only by agents
+	// that can update themselves (SelfUpdate).
+	BinarySHA256 string `json:"binarySha256,omitempty"`
+	SelfUpdate   bool   `json:"selfUpdate,omitempty"`
+}
+
+// HeartbeatResponse is returned by the controller. Update is set when the
+// agent should install the controller's binary.
+type HeartbeatResponse struct {
+	Update *update.Manifest `json:"update,omitempty"`
 }
 
 type Enrollment struct {

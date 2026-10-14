@@ -24,7 +24,19 @@ type Controller struct {
 	PollEverySeconds int    `json:"pollEverySeconds"`
 	Listen           string `json:"listen"`
 	DatabasePath     string `json:"databasePath"`
+	AgentUpdates     AgentUpdates `json:"agentUpdates"`
 }
+
+// AgentUpdates controls how the controller distributes its own binary to
+// agents running as a Windows service.
+type AgentUpdates struct {
+	// Enabled defaults to true when omitted.
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxConcurrent limits how many agents update at the same time.
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+}
+
+func (a AgentUpdates) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 
 type Application struct {
 	Name              string `json:"name"`
@@ -72,6 +84,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Controller.PollEverySeconds <= 0 { cfg.Controller.PollEverySeconds = 5 }
 	if cfg.Controller.Listen == "" { cfg.Controller.Listen = ":8443" }
 	if cfg.Controller.DatabasePath == "" { cfg.Controller.DatabasePath = "appguard.db" }
+	if cfg.Controller.AgentUpdates.MaxConcurrent <= 0 { cfg.Controller.AgentUpdates.MaxConcurrent = 5 }
 	for i := range cfg.Apps { normalizeApplication(&cfg.Apps[i]) }
 }
 

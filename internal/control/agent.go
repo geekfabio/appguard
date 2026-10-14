@@ -14,6 +14,7 @@ import (
 
 	"appguard/internal/buildinfo"
 	"appguard/internal/config"
+	"appguard/internal/update"
 	"appguard/internal/watchdog"
 )
 
@@ -43,7 +44,14 @@ func Enroll(cfg *config.Config) error {
 	return nil
 }
 
-func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdog) {
+// AgentOptions enables self-update. Restart must restart the service so the
+// newly installed binary runs.
+type AgentOptions struct {
+	Updater *update.Updater
+	Restart func()
+}
+
+func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdog, opts AgentOptions) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	every := time.Duration(cfg.Controller.PollEverySeconds) * time.Second
 
@@ -51,7 +59,12 @@ func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdo
 
 	// Heartbeats run on their own loop so a slow command (stop + start can
 	// take several seconds) never makes the agent look offline.
-	go runEvery(ctx, every, func() { sendHeartbeat(client, cfg, w) })
+	go runEvery(ctx, every, func() {
+		resp, ok := sendHeartbeat(client, cfg, w, opts.Updater)
+		if ok {
+			handleSelfUpdate(ctx, client, cfg, w, opts, resp)
+		}
+	})
 
 	done := newCommandLog(200)
 	runEvery(ctx, every, func() { fetchCommands(client, cfg, w, done) })
@@ -107,7 +120,7 @@ func sendEvent(client *http.Client, cfg *config.Config, event Event) {
 	_ = resp.Body.Close()
 }
 
-func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog) {
+func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog, upd *update.Updater) (HeartbeatResponse, bool) {
 	settings := w.Settings()
 	status := w.Status()
 	status["settings"] = settings
@@ -120,6 +133,10 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 		Status: status,
 		Settings: settings,
 	}
+	if upd != nil {
+		hb.BinarySHA256 = upd.SHA256()
+		hb.SelfUpdate = true
+	}
 	b, _ := json.Marshal(hb)
 
 	req, _ := http.NewRequest(
@@ -129,12 +146,70 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	)
 	req.Header.Set("Content-Type", "application/json")
 
+	var out HeartbeatResponse
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("controller heartbeat failed", "error", err)
+		return out, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return out, false
+	}
+	if resp.StatusCode == http.StatusOK {
+		_ = json.NewDecoder(resp.Body).Decode(&out)
+	}
+	return out, true
+}
+
+// handleSelfUpdate reports the outcome of a previous update and installs the
+// binary offered by the controller.
+func handleSelfUpdate(ctx context.Context, client *http.Client, cfg *config.Config, w *watchdog.Watchdog, opts AgentOptions, resp HeartbeatResponse) {
+	upd := opts.Updater
+	if upd == nil {
 		return
 	}
-	_ = resp.Body.Close()
+
+	upd.ConfirmHealthy()
+	if r := upd.TakeResult(); r != nil {
+		sendEvent(client, cfg, Event{
+			Time: time.Now(), AgentID: cfg.AgentID, Group: w.Settings().Group,
+			Action: r.Action, Detail: r.Detail,
+		})
+	}
+
+	m := resp.Update
+	if m == nil || !upd.Claim(*m) {
+		return
+	}
+
+	go func() {
+		group := w.Settings().Group
+		sendEvent(client, cfg, Event{
+			Time: time.Now(), AgentID: cfg.AgentID, Group: group,
+			Action: "agent-update-started", Detail: fmt.Sprintf("a descarregar versão %s", m.Version),
+		})
+
+		download := &http.Client{Timeout: 10 * time.Minute}
+		url := strings.TrimRight(cfg.Controller.URL, "/") + "/api/v1/update/agent"
+		if err := upd.Install(ctx, download, url, *m); err != nil {
+			slog.Error("self-update failed", "version", m.Version, "error", err)
+			sendEvent(client, cfg, Event{
+				Time: time.Now(), AgentID: cfg.AgentID, Group: group,
+				Action: "agent-update-failed", Detail: fmt.Sprintf("versão %s: %v", m.Version, err),
+			})
+			return
+		}
+
+		slog.Info("self-update installed; restarting service", "version", m.Version)
+		sendEvent(client, cfg, Event{
+			Time: time.Now(), AgentID: cfg.AgentID, Group: group,
+			Action: "agent-update-restarting", Detail: fmt.Sprintf("versão %s instalada; a reiniciar o serviço", m.Version),
+		})
+		if opts.Restart != nil {
+			opts.Restart()
+		}
+	}()
 }
 
 func ackCommand(client *http.Client, cfg *config.Config, commandID string, result CommandResult) bool {
