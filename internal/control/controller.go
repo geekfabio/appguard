@@ -45,6 +45,25 @@ func RunController(cfg *config.Config) error {
 
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{
+			"status": "ok",
+			"service": "appguard-controller",
+			"time": time.Now().UTC(),
+		})
+	})
+
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if err := st.db.Ping(); err != nil {
+			http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, map[string]any{
+			"status": "ready",
+			"database": "ok",
+		})
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -521,7 +540,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><h1>AppGuard Control Center <span class="muted">v0.5.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
+<header><h1>AppGuard Control Center <span class="muted">v1.0.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="token" type="password" placeholder="Token Bearer"><button class="btn" onclick="saveToken()">Guardar token</button></div>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
