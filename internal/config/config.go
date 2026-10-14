@@ -22,6 +22,7 @@ type Controller struct {
 	Token            string `json:"token"`
 	PollEverySeconds int    `json:"pollEverySeconds"`
 	Listen           string `json:"listen"`
+	DatabasePath     string `json:"databasePath"`
 }
 
 type Application struct {
@@ -60,6 +61,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Controller.Listen == "" {
 		cfg.Controller.Listen = ":8443"
+	}
+	if cfg.Controller.DatabasePath == "" {
+		cfg.Controller.DatabasePath = "appguard.db"
 	}
 	for i := range cfg.Apps {
 		if cfg.Apps[i].MaxRetries <= 0 {

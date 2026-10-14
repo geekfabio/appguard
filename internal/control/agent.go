@@ -19,6 +19,8 @@ func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdo
 	t := time.NewTicker(time.Duration(cfg.Controller.PollEverySeconds) * time.Second)
 	defer t.Stop()
 
+	go forwardWatchdogEvents(ctx, client, cfg, w.Events())
+
 	runOnce := func() {
 		sendHeartbeat(client, cfg, w)
 		fetchCommands(client, cfg, w)
@@ -33,6 +35,42 @@ func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdo
 			runOnce()
 		}
 	}
+}
+
+func forwardWatchdogEvents(ctx context.Context, client *http.Client, cfg *config.Config, events <-chan watchdog.Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e := <-events:
+			sendEvent(client, cfg, Event{
+				Time: e.Time,
+				AgentID: cfg.AgentID,
+				Group: cfg.Group,
+				Action: e.Action,
+				AppName: e.AppName,
+				Detail: e.Detail,
+			})
+		}
+	}
+}
+
+func sendEvent(client *http.Client, cfg *config.Config, event Event) {
+	b, _ := json.Marshal(event)
+	req, _ := http.NewRequest(
+		http.MethodPost,
+		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/agent-events",
+		bytes.NewReader(b),
+	)
+	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Debug("controller event send failed", "error", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog) {

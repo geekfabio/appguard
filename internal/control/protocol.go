@@ -20,5 +20,6 @@ type Event struct {
 	AgentID string    `json:"agentId,omitempty"`
 	Group   string    `json:"group,omitempty"`
 	Action  string    `json:"action"`
+	AppName string    `json:"appName,omitempty"`
 	Detail  string    `json:"detail,omitempty"`
 }
