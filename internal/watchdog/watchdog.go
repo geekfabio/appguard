@@ -24,8 +24,10 @@ type Watchdog struct {
 	configPath  string
 	retries     map[string]int
 	stableSince map[string]time.Time
-	pending     map[string]bool
-	events      chan Event
+	pending        map[string]bool
+	startedAt       time.Time
+	startupHandled  map[string]bool
+	events          chan Event
 }
 
 func New(cfg *config.Config, configPath string) *Watchdog {
@@ -35,6 +37,8 @@ func New(cfg *config.Config, configPath string) *Watchdog {
 		retries: make(map[string]int),
 		stableSince: make(map[string]time.Time),
 		pending: make(map[string]bool),
+		startedAt: time.Now(),
+		startupHandled: make(map[string]bool),
 		events: make(chan Event, 128),
 	}
 }
@@ -67,6 +71,8 @@ func (w *Watchdog) ApplySettings(settings config.AgentSettings) error {
 	w.retries = make(map[string]int)
 	w.stableSince = make(map[string]time.Time)
 	w.pending = make(map[string]bool)
+	w.startedAt = time.Now()
+	w.startupHandled = make(map[string]bool)
 
 	if err := config.Save(w.configPath, w.cfg); err != nil {
 		return err
@@ -130,6 +136,28 @@ func (w *Watchdog) checkAll() {
 			slog.Error("process check failed", "app", app.Name, "error", err)
 			w.emit("process-check-failed", app.Name, err.Error())
 			continue
+		}
+
+		if !w.startupHandled[app.Name] {
+			delay := time.Duration(app.StartupDelaySeconds) * time.Second
+			elapsed := now.Sub(w.startedAt)
+
+			if elapsed < delay {
+				continue
+			}
+
+			w.startupHandled[app.Name] = true
+			if !running {
+				if err := proc.Start(app.Path, app.WorkingDirectory); err != nil {
+					slog.Error("initial application start failed", "app", app.Name, "error", err)
+					w.emit("startup-failed", app.Name, err.Error())
+				} else {
+					slog.Info("application started after startup delay", "app", app.Name, "delay", delay)
+					w.stableSince[app.Name] = time.Now()
+					w.emit("startup-success", app.Name, fmt.Sprintf("iniciada após %s", delay))
+				}
+				continue
+			}
 		}
 
 		if running {
@@ -222,6 +250,8 @@ func (w *Watchdog) Status() map[string]any {
 			"pids": ids,
 			"retries": w.retries[app.Name],
 			"maxRetries": app.MaxRetries,
+			"startupDelaySeconds": app.StartupDelaySeconds,
+			"startupDelayPending": !w.startupHandled[app.Name],
 		})
 	}
 
