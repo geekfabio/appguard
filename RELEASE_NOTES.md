@@ -1,24 +1,40 @@
-# AppGuard v1.1.2
+# AppGuard v1.1.3
 
-This release removes persistent log/event storage from SQLite.
+This release makes Controller setup automatically generate a ready-to-distribute Agent configuration.
 
-## Changes
+## Controller setup
 
-- Removed the persistent `events` table from SQLite.
-- Existing `events` tables are dropped automatically when the Controller starts.
-- Agent events and watchdog events are kept only in memory.
-- The dashboard still shows recent events while the Controller is running.
-- Recent events disappear after the Controller restarts.
-- SQLite is now used only for operational state such as agents and pending commands.
+After saving a Controller configuration, AppGuard generates:
 
-## Why
+```text
+appguard.agent.json
+```
 
-This keeps the AppGuard database smaller and avoids retaining historical logs on disk.
+beside the Controller's own `appguard.json`.
 
-## Unchanged
+The generated file includes:
 
-- Agent status remains available.
-- Pending offline commands remain persistent.
-- ACK command delivery remains persistent.
-- Controller local watchdog behavior remains unchanged.
-- First-run setup remains unchanged.
+- Agent role;
+- automatically detected Controller LAN address;
+- Controller port 8443;
+- polling/check defaults;
+- monitored application definitions;
+- no token requirement.
+
+## Agent deployment
+
+Copy `appguard.agent.json` to an Agent machine, rename it to `appguard.json`, and place it beside `appguard.exe`.
+
+The Agent ID is automatically replaced with that machine's Windows computer name.
+
+If the local executable path differs on the Agent machine, run:
+
+```powershell
+.\appguard.exe setup
+```
+
+and select the correct executable using the native Windows picker.
+
+## Existing behavior
+
+The Controller continues to operate as its own Agent/watchdog and monitor local applications.
