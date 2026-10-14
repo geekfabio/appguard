@@ -20,7 +20,6 @@ type Config struct {
 
 type Controller struct {
 	URL              string `json:"url"`
-	Token            string `json:"token"`
 	PollEverySeconds int    `json:"pollEverySeconds"`
 	Listen           string `json:"listen"`
 	DatabasePath     string `json:"databasePath"`
