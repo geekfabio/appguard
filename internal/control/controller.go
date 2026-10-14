@@ -189,17 +189,14 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		if err := st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: e.Time,
 			AgentID: e.AgentID,
 			Group: e.Group,
 			Action: e.Action,
 			AppName: e.AppName,
 			Detail: e.Detail,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		})
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
