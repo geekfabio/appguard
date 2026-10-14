@@ -20,16 +20,6 @@ type Agent struct {
 	Status   map[string]any `json:"status"`
 }
 
-type Event struct {
-	ID      int64     `json:"id"`
-	Time    time.Time `json:"time"`
-	AgentID string    `json:"agentId,omitempty"`
-	Group   string    `json:"group,omitempty"`
-	Action  string    `json:"action"`
-	AppName string    `json:"appName,omitempty"`
-	Detail  string    `json:"detail,omitempty"`
-}
-
 type Command struct {
 	ID      string          `json:"id"`
 	AgentID string          `json:"agentId"`
@@ -68,22 +58,6 @@ CREATE TABLE IF NOT EXISTS agents (
 	last_seen TEXT NOT NULL,
 	status_json TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS events (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	event_time TEXT NOT NULL,
-	agent_id TEXT,
-	group_name TEXT,
-	action TEXT NOT NULL,
-	app_name TEXT,
-	detail TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_agent_time
-ON events(agent_id, event_time DESC);
-
-CREATE INDEX IF NOT EXISTS idx_events_action_time
-ON events(action, event_time DESC);
 
 CREATE TABLE IF NOT EXISTS commands (
 	id TEXT PRIMARY KEY,
@@ -161,60 +135,6 @@ FROM agents WHERE agent_id = ?
 		return nil, fmt.Errorf("decode status: %w", err)
 	}
 	return &a, nil
-}
-
-func (d *DB) AddEvent(e Event) error {
-	if e.Time.IsZero() {
-		e.Time = time.Now()
-	}
-	_, err := d.sql.Exec(`
-INSERT INTO events(event_time, agent_id, group_name, action, app_name, detail)
-VALUES(?, ?, ?, ?, ?, ?)
-`,
-		e.Time.UTC().Format(time.RFC3339Nano),
-		e.AgentID,
-		e.Group,
-		e.Action,
-		e.AppName,
-		e.Detail,
-	)
-	return err
-}
-
-func (d *DB) ListEvents(agentID string, limit int) ([]Event, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 200
-	}
-
-	query := `
-SELECT id, event_time, agent_id, group_name, action, app_name, detail
-FROM events
-`
-	args := []any{}
-	if agentID != "" {
-		query += " WHERE agent_id = ?"
-		args = append(args, agentID)
-	}
-	query += " ORDER BY id DESC LIMIT ?"
-	args = append(args, limit)
-
-	rows, err := d.sql.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []Event
-	for rows.Next() {
-		var e Event
-		var ts string
-		if err := rows.Scan(&e.ID, &ts, &e.AgentID, &e.Group, &e.Action, &e.AppName, &e.Detail); err != nil {
-			return nil, err
-		}
-		e.Time, _ = time.Parse(time.RFC3339Nano, ts)
-		result = append(result, e)
-	}
-	return result, rows.Err()
 }
 
 
