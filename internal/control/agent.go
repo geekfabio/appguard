@@ -27,7 +27,6 @@ func Enroll(cfg *config.Config) error {
 		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/enroll",
 		bytes.NewReader(payload),
 	)
-	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -91,7 +90,6 @@ func sendEvent(client *http.Client, cfg *config.Config, event Event) {
 		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/agent-events",
 		bytes.NewReader(b),
 	)
-	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
@@ -122,7 +120,6 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/heartbeat",
 		bytes.NewReader(b),
 	)
-	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
@@ -142,7 +139,6 @@ func ackCommand(client *http.Client, cfg *config.Config, commandID string) {
 		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/commands/ack/"+commandID,
 		nil,
 	)
-	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
 	resp, err := client.Do(req)
 	if err != nil {
 		slog.Debug("command ack failed", "commandId", commandID, "error", err)
@@ -154,7 +150,6 @@ func ackCommand(client *http.Client, cfg *config.Config, commandID string) {
 func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog) {
 	url := strings.TrimRight(cfg.Controller.URL, "/") + "/api/v1/commands/" + cfg.AgentID
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
 
 	resp, err := client.Do(req)
 	if err != nil {
