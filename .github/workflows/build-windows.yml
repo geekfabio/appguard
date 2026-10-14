@@ -40,6 +40,7 @@ jobs:
       - name: Copy example config and scripts
         run: |
           cp appguard.example.json dist/appguard.example.json
+          cp appguard.controller.example.json dist/appguard.controller.example.json
           cp -r scripts dist/scripts
 
       - name: Upload artifact
