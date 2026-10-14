@@ -4,15 +4,44 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"appguard/internal/buildinfo"
 	"appguard/internal/config"
 	"appguard/internal/watchdog"
 )
+
+func Enroll(cfg *config.Config) error {
+	payload, _ := json.Marshal(Enrollment{
+		AgentID: cfg.AgentID,
+		Group: cfg.Group,
+		Version: buildinfo.Version,
+	})
+	req, _ := http.NewRequest(
+		http.MethodPost,
+		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/enroll",
+		bytes.NewReader(payload),
+	)
+	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("enrollment failed: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
+}
 
 func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdog) {
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -81,6 +110,7 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	hb := Heartbeat{
 		AgentID: cfg.AgentID,
 		Group: settings.Group,
+		Version: buildinfo.Version,
 		Timestamp: time.Now(),
 		Status: status,
 		Settings: settings,
