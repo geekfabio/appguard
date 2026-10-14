@@ -19,12 +19,13 @@ type Event struct {
 }
 
 type Watchdog struct {
-	mu         sync.RWMutex
-	cfg        *config.Config
-	configPath string
-	retries    map[string]int
-	lastOK     map[string]time.Time
-	events     chan Event
+	mu          sync.RWMutex
+	cfg         *config.Config
+	configPath  string
+	retries     map[string]int
+	stableSince map[string]time.Time
+	pending     map[string]bool
+	events      chan Event
 }
 
 func New(cfg *config.Config, configPath string) *Watchdog {
@@ -32,7 +33,8 @@ func New(cfg *config.Config, configPath string) *Watchdog {
 		cfg: cfg,
 		configPath: configPath,
 		retries: make(map[string]int),
-		lastOK: make(map[string]time.Time),
+		stableSince: make(map[string]time.Time),
+		pending: make(map[string]bool),
 		events: make(chan Event, 128),
 	}
 }
@@ -78,6 +80,8 @@ func (w *Watchdog) checkAll() {
 		return
 	}
 
+	now := time.Now()
+
 	for _, app := range w.cfg.Apps {
 		if !app.Enabled {
 			continue
@@ -91,15 +95,20 @@ func (w *Watchdog) checkAll() {
 		}
 
 		if running {
-			if last, ok := w.lastOK[app.Name]; ok &&
-				time.Since(last) > time.Duration(app.ResetAfterSeconds)*time.Second {
-				w.retries[app.Name] = 0
+			if w.stableSince[app.Name].IsZero() {
+				w.stableSince[app.Name] = now
 			}
-			w.lastOK[app.Name] = time.Now()
+			if w.retries[app.Name] > 0 &&
+				now.Sub(w.stableSince[app.Name]) >= time.Duration(app.ResetAfterSeconds)*time.Second {
+				w.retries[app.Name] = 0
+				w.emit("retry-counter-reset", app.Name, "aplicação permaneceu estável; contador reposto")
+			}
 			continue
 		}
 
-		if !app.AutoRestart {
+		w.stableSince[app.Name] = time.Time{}
+
+		if !app.AutoRestart || w.pending[app.Name] {
 			continue
 		}
 
@@ -112,6 +121,7 @@ func (w *Watchdog) checkAll() {
 		attempt := w.retries[app.Name] + 1
 		delay := retryDelay(w.retries[app.Name])
 		w.retries[app.Name] = attempt
+		w.pending[app.Name] = true
 
 		slog.Warn("application stopped; scheduling restart",
 			"app", app.Name, "retry", attempt, "delay", delay)
@@ -120,17 +130,30 @@ func (w *Watchdog) checkAll() {
 		w.emit("retry-scheduled", app.Name, fmt.Sprintf("tentativa %d em %s", attempt, delay))
 
 		appCopy := app
-		go func() {
-			time.Sleep(delay)
-			if err := proc.Start(appCopy.Path, appCopy.WorkingDirectory); err != nil {
-				slog.Error("application restart failed", "app", appCopy.Name, "error", err)
-				w.emit("restart-failed", appCopy.Name, err.Error())
-			} else {
-				slog.Info("application restarted", "app", appCopy.Name)
-				w.emit("restart-success", appCopy.Name, "processo iniciado com sucesso")
-			}
-		}()
+		go w.restartAfterDelay(appCopy, attempt, delay)
 	}
+}
+
+func (w *Watchdog) restartAfterDelay(app config.Application, attempt int, delay time.Duration) {
+	time.Sleep(delay)
+
+	err := proc.Start(app.Path, app.WorkingDirectory)
+
+	w.mu.Lock()
+	w.pending[app.Name] = false
+	if err == nil {
+		w.stableSince[app.Name] = time.Now()
+	}
+	w.mu.Unlock()
+
+	if err != nil {
+		slog.Error("application restart failed", "app", app.Name, "retry", attempt, "error", err)
+		w.emit("restart-failed", app.Name, fmt.Sprintf("tentativa %d: %v", attempt, err))
+		return
+	}
+
+	slog.Info("application restarted", "app", app.Name, "retry", attempt)
+	w.emit("restart-success", app.Name, fmt.Sprintf("tentativa %d concluída", attempt))
 }
 
 func retryDelay(attempt int) time.Duration {
@@ -157,6 +180,7 @@ func (w *Watchdog) Status() map[string]any {
 			"name": app.Name,
 			"enabled": app.Enabled,
 			"running": running,
+			"restartPending": w.pending[app.Name],
 			"pids": ids,
 			"retries": w.retries[app.Name],
 			"maxRetries": app.MaxRetries,
@@ -182,6 +206,7 @@ func (w *Watchdog) Apply(action, appName string) error {
 	case "stop-all":
 		for _, app := range w.cfg.Apps {
 			_ = proc.Stop(app.Path)
+			w.pending[app.Name] = false
 		}
 	case "restart-all":
 		for _, app := range w.cfg.Apps {
@@ -193,6 +218,8 @@ func (w *Watchdog) Apply(action, appName string) error {
 				slog.Error("restart failed", "app", app.Name, "error", err)
 				w.emit("restart-failed", app.Name, err.Error())
 			} else {
+				w.pending[app.Name] = false
+				w.stableSince[app.Name] = time.Now()
 				w.emit("restart-success", app.Name, "reinício remoto concluído")
 			}
 		}
@@ -216,12 +243,15 @@ func (w *Watchdog) Apply(action, appName string) error {
 			app.Enabled = true
 		case "stop-app":
 			app.Enabled = false
+			w.pending[app.Name] = false
 			_ = proc.Stop(app.Path)
 		case "restart-app":
 			_ = proc.Stop(app.Path)
 			if err := proc.Start(app.Path, app.WorkingDirectory); err != nil {
 				return err
 			}
+			w.pending[app.Name] = false
+			w.stableSince[app.Name] = time.Now()
 		}
 	default:
 		return fmt.Errorf("unknown action %q", action)
