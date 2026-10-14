@@ -292,18 +292,19 @@ function update(i,key,value){
 function esc(v){return String(v??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 
 function renderApps(){
- document.getElementById('apps').innerHTML=apps.map((a,i)=>`
- <div class="app">
-  <div class="app-head"><b>Application ${i+1}</b><button class="btn warn" onclick="removeApp(${i})">Remove</button></div>
-  <div class="grid">
-   <div><label>Name</label><input value="${esc(a.name)}" oninput="update(${i},'name',this.value)"></div>
-   <div class="row"><div class="grow"><label>Executable</label><input value="${esc(a.path)}" readonly></div><button class="btn" onclick="selectApp(${i})">Browse…</button></div>
-   <div class="full"><label>Working directory</label><input value="${esc(a.workingDirectory)}" oninput="update(${i},'workingDirectory',this.value)"></div>
-   <div><label>Initial startup delay (seconds)</label><input type="number" min="0" value="${a.startupDelaySeconds}" oninput="update(${i},'startupDelaySeconds',this.value)"></div>
-   <div><label>Max retries</label><input type="number" min="1" value="${a.maxRetries}" oninput="update(${i},'maxRetries',this.value)"></div>
-   <div><label>Retry reset after stable seconds</label><input type="number" min="1" value="${a.resetAfterSeconds}" oninput="update(${i},'resetAfterSeconds',this.value)"></div>
-  </div>
- </div>`).join('');
+ document.getElementById('apps').innerHTML=apps.map((a,i)=>
+  '<div class="app">'+
+   '<div class="app-head"><b>Application '+(i+1)+'</b><button class="btn warn" onclick="removeApp('+i+')">Remove</button></div>'+
+   '<div class="grid">'+
+    '<div><label>Name</label><input value="'+esc(a.name)+'" oninput="update('+i+',\'name\',this.value)"></div>'+
+    '<div class="row"><div class="grow"><label>Executable</label><input value="'+esc(a.path)+'" readonly></div><button class="btn" onclick="selectApp('+i+')">Browse…</button></div>'+
+    '<div class="full"><label>Working directory</label><input value="'+esc(a.workingDirectory)+'" oninput="update('+i+',\'workingDirectory\',this.value)"></div>'+
+    '<div><label>Initial startup delay (seconds)</label><input type="number" min="0" value="'+a.startupDelaySeconds+'" oninput="update('+i+',\'startupDelaySeconds\',this.value)"></div>'+
+    '<div><label>Max retries</label><input type="number" min="1" value="'+a.maxRetries+'" oninput="update('+i+',\'maxRetries\',this.value)"></div>'+
+    '<div><label>Retry reset after stable seconds</label><input type="number" min="1" value="'+a.resetAfterSeconds+'" oninput="update('+i+',\'resetAfterSeconds\',this.value)"></div>'+
+   '</div>'+
+  '</div>'
+ ).join('');
 }
 
 async function save(){
