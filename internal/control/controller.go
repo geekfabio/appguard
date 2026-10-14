@@ -18,10 +18,9 @@ import (
 const offlineAfter = 20 * time.Second
 
 type controllerState struct {
-	mu       sync.RWMutex
-	commands map[string][]Command
-	token    string
-	db       *storage.DB
+	mu    sync.RWMutex
+	token string
+	db    *storage.DB
 }
 
 type agentView struct {
@@ -40,7 +39,6 @@ func RunController(cfg *config.Config) error {
 	defer db.Close()
 
 	st := &controllerState{
-		commands: make(map[string][]Command),
 		token: cfg.Controller.Token,
 		db: db,
 	}
@@ -145,12 +143,39 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		st.mu.Lock()
-		cmds := st.commands[agentID]
-		delete(st.commands, agentID)
-		st.mu.Unlock()
+		stored, err := st.db.FetchPendingCommands(agentID, 50)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
+		cmds := make([]Command, 0, len(stored))
+		for _, item := range stored {
+			cmds = append(cmds, Command{
+				ID: item.ID,
+				Action: item.Action,
+				AppName: item.AppName,
+				Payload: item.Payload,
+			})
+		}
 		writeJSON(w, cmds)
+	}))
+
+	mux.HandleFunc("/api/v1/commands/ack/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		commandID := strings.TrimPrefix(r.URL.Path, "/api/v1/commands/ack/")
+		if commandID == "" {
+			http.Error(w, "missing command id", http.StatusBadRequest)
+			return
+		}
+		if err := st.db.AckCommand(commandID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	mux.HandleFunc("/api/v1/admin/agents", st.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -354,13 +379,16 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		st.mu.Lock()
-		st.commands[agentID] = append(st.commands[agentID], Command{
+		if err := st.db.QueueCommand(storage.Command{
 			ID: fmt.Sprintf("%d-%s", time.Now().UnixNano(), agentID),
+			AgentID: agentID,
 			Action: "apply-settings",
 			Payload: payload,
-		})
-		st.mu.Unlock()
+			Created: time.Now(),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		_ = st.db.AddEvent(storage.Event{
 			Time: time.Now(), AgentID: agentID, Group: settings.Group,
@@ -383,10 +411,12 @@ func RunController(cfg *config.Config) error {
 }
 
 func (s *controllerState) enqueueLocked(agentID, action, appName string) {
-	s.commands[agentID] = append(s.commands[agentID], Command{
+	_ = s.db.QueueCommand(storage.Command{
 		ID: fmt.Sprintf("%d-%s", time.Now().UnixNano(), agentID),
+		AgentID: agentID,
 		Action: action,
 		AppName: appName,
+		Created: time.Now(),
 	})
 }
 
