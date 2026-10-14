@@ -49,6 +49,14 @@ const (
 type CommandResult struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
+	// Output holds captured output, e.g. from a run-powershell command.
+	Output string `json:"output,omitempty"`
+}
+
+// PowerShellRequest is the payload of a run-powershell command.
+type PowerShellRequest struct {
+	Script         string `json:"script"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
 }
 
 type Event struct {

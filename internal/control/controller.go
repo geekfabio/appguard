@@ -105,6 +105,11 @@ func RunController(cfg *config.Config) error {
 		_, _ = w.Write([]byte(page))
 	}))
 
+	mux.HandleFunc("/powershell", st.guard.protectPage(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(powershellHTML))
+	}))
+
 	mux.HandleFunc("/api/v1/enroll", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -277,7 +282,7 @@ func RunController(cfg *config.Config) error {
 			result.Status = CommandOK
 		}
 
-		cmd, err := st.db.AckCommand(commandID, result.Status, result.Error)
+		cmd, err := st.db.AckCommand(commandID, result.Status, result.Error, result.Output)
 		if err == sql.ErrNoRows {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -562,6 +567,9 @@ func RunController(cfg *config.Config) error {
 		writeJSON(w, map[string]any{"queued": true})
 	}))
 
+	mux.HandleFunc("/api/v1/admin/powershell", st.admin(st.handlePowerShell))
+	mux.HandleFunc("/api/v1/admin/powershell/results", st.admin(st.handlePowerShellResults))
+
 	slog.Info("AppGuard controller listening",
 		"addr", cfg.Controller.Listen,
 		"database", cfg.Controller.DatabasePath)
@@ -679,7 +687,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><a href="/logout" class="btn" style="float:right">Sair</a><h1>AppGuard Control Center <span class="muted">{{VERSION}}</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
+<header><a href="/logout" class="btn" style="float:right">Sair</a><a href="/powershell" class="btn" style="float:right;margin-right:8px">PowerShell</a><h1>AppGuard Control Center <span class="muted">{{VERSION}}</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
 <div class="cards">
@@ -755,4 +763,55 @@ async function saveSettings(){let body;try{body=JSON.parse(document.getElementBy
 async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good node-action" data-action="enable-all">Activar</button> <button class="btn good node-action" data-action="start-all">Abrir</button> <button class="btn node-action" data-action="restart-all">Reiniciar</button> <button class="btn warn node-action" data-action="stop-all">Parar</button> <button class="btn warn node-action" data-action="disable-all">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.operationPending?'A executar comando':(p.restartPending?'Retry pendente':'Stopped')))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="start-app">Abrir</button> <button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="enable-app">Activar</button> <button class="btn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="restart-app">Reiniciar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="stop-app">Parar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="disable-app">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
 document.addEventListener('click',e=>{const n=e.target.closest('.node-action');if(n){command(n.dataset.action);return}const a=e.target.closest('.app-action');if(a){commandApp(decodeURIComponent(a.dataset.app),a.dataset.action)}});
 refresh();setInterval(refresh,5000);
+</script></body></html>`
+
+const powershellHTML = `<!doctype html>
+<html lang="pt"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AppGuard — PowerShell</title>
+<style>
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#07111f;color:#e8edf7;margin:0}
+.wrap{max-width:1100px;margin:auto;padding:26px}a{color:#8fc7ff;text-decoration:none}
+.panel{background:#0d1c2d;border:1px solid #20344e;border-radius:14px;margin:16px 0;overflow:hidden}
+.panel h2{font-size:15px;padding:14px 18px;margin:0;border-bottom:1px solid #20344e}.body{padding:18px}
+textarea{width:100%;min-height:200px;background:#060d18;border:1px solid #2b4564;color:#d6f5c9;border-radius:8px;padding:12px;font-family:Consolas,monospace;font-size:13px;box-sizing:border-box}
+select,input{background:#07111f;border:1px solid #2b4564;color:#fff;border-radius:8px;padding:9px 11px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.btn{background:#1f6feb;color:#fff;border:0;border-radius:9px;padding:10px 16px;cursor:pointer}.btn:hover{background:#2d7dfb}
+.btn.warn{background:#5b2c22}.muted{color:#8fa5bf;font-size:12px}
+.result{border-bottom:1px solid #172b42;padding:12px 16px}.result pre{white-space:pre-wrap;word-break:break-word;background:#060d18;border-radius:8px;padding:10px;margin:8px 0 0;max-height:280px;overflow:auto;font-size:12px}
+.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px}.ok{background:#164733}.fail{background:#5b2c22}.pend{background:#2a3b52}
+.warnbox{background:#3a2a12;border:1px solid #6b4a1f;border-radius:8px;padding:10px 12px;font-size:13px;color:#ffd9a8}
+</style></head><body><div class="wrap">
+<a href="/">← Dashboard</a><h1>Executar PowerShell</h1>
+<div class="warnbox">⚠ O script corre como SYSTEM em todos os computadores escolhidos. Reveja antes de enviar.</div>
+<div class="panel"><h2>Novo comando</h2><div class="body">
+<textarea id="script" placeholder="Get-Service | Where-Object Status -eq 'Running'"></textarea>
+<div class="row">
+<label class="muted">Destino</label>
+<select id="ttype" onchange="onTarget()"><option value="all">Todos os agentes</option><option value="group">Grupo</option><option value="agent">Um agente</option></select>
+<select id="tvalue" style="display:none"></select>
+<label class="muted">Timeout (s)</label><input id="timeout" type="number" value="120" style="width:90px">
+<button class="btn" onclick="send()">Enviar</button>
+<span class="muted" id="status"></span>
+</div></div></div>
+<div class="panel"><h2>Resultados recentes</h2><div class="body" style="padding:0" id="results"></div></div>
+</div><script>
+let agents=[];
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function api(path,opts={}){const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
+function onTarget(){const t=document.getElementById('ttype').value,sel=document.getElementById('tvalue');
+if(t==='all'){sel.style.display='none';return}sel.style.display='';
+if(t==='group'){const gs=[...new Set(agents.map(a=>a.group))].sort();sel.innerHTML=gs.map(g=>'<option>'+esc(g)+'</option>').join('')}
+else{sel.innerHTML=agents.filter(a=>a.status?.role!=='controller').map(a=>'<option>'+esc(a.agentId)+'</option>').join('')}}
+async function send(){const st=document.getElementById('status');st.textContent='';
+const script=document.getElementById('script').value;if(!script.trim()){st.textContent='Script vazio';return}
+const t=document.getElementById('ttype').value;const body={script,timeoutSeconds:Number(document.getElementById('timeout').value)||120,target:{type:t,value:t==='all'?'':document.getElementById('tvalue').value}};
+if(!confirm('Enviar este script PowerShell para o destino seleccionado?'))return;
+try{const r=await api('/api/v1/admin/powershell',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});st.textContent='Enviado a '+r.queued+' agente(s)';setTimeout(loadResults,800)}catch(e){st.textContent=e.message}}
+function cls(s){return s==='ok'?'ok':s==='failed'?'fail':'pend'}
+function label(s){return s==='ok'?'OK':s==='failed'?'Falhou':'Pendente'}
+async function loadResults(){try{const recs=await api('/api/v1/admin/powershell/results');
+document.getElementById('results').innerHTML=(recs||[]).map(r=>'<div class="result"><span class="badge '+cls(r.status)+'">'+label(r.status)+'</span> <b>'+esc(r.agentId)+'</b> <span class="muted">'+new Date(r.createdAt).toLocaleString()+'</span>'+(r.error?'<pre>'+esc(r.error)+'</pre>':'')+(r.output?'<pre>'+esc(r.output)+'</pre>':(r.status==='ok'?'<pre class="muted">(sem saída)</pre>':''))+'</div>').join('')||'<div class="result muted">Sem resultados ainda.</div>'}catch(e){document.getElementById('results').innerHTML='<div class="result">'+esc(e.message)+'</div>'}}
+async function init(){try{agents=await api('/api/v1/admin/agents')||[]}catch(_){}onTarget();loadResults();setInterval(loadResults,4000)}
+init();
 </script></body></html>`

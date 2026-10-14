@@ -304,6 +304,20 @@ Recomendado:
 - evite redireccionamento de portas público;
 - use VPN ou controlo de acesso de rede para administração remota.
 
+## PowerShell remoto
+
+Na página **PowerShell** do dashboard (botão no topo) pode enviar um script para **todos os agentes**, para um **grupo** ou para **um agente**. O agente executa o script com o Windows PowerShell (`-NoProfile -NonInteractive -ExecutionPolicy Bypass`), captura a saída (stdout+stderr) e devolve-a ao controlador, que a mostra por agente com o estado (OK / Falhou / Pendente).
+
+Detalhes:
+
+- O comando entra na mesma fila persistente dos restantes: um PC offline executa quando voltar à rede.
+- O script corre **como SYSTEM**, escondido, na sessão do serviço. Reveja antes de enviar.
+- Timeout configurável (padrão 120 s, máximo 3600 s); ao esgotar, o processo é terminado e o resultado fica como falha.
+- O computador controlador nunca é incluído nos destinos.
+- Endpoints (protegidos pelo login): `POST /api/v1/admin/powershell` e `GET /api/v1/admin/powershell/results`.
+
+> Esta funcionalidade é execução remota de código na sua frota. Mantenha o controlador atrás do login e numa rede de confiança.
+
 ## Atraso inicial por aplicação
 
 Cada aplicação pode esperar antes da primeira inicialização através de:

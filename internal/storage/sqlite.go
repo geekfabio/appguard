@@ -77,7 +77,7 @@ ON commands(agent_id, delivered_at, created_at);
 	if _, err := d.sql.Exec(schema); err != nil {
 		return err
 	}
-	for _, column := range []string{"result_status", "result_error"} {
+	for _, column := range []string{"result_status", "result_error", "result_output"} {
 		if err := d.addColumnIfMissing("commands", column, "TEXT"); err != nil {
 			return err
 		}
@@ -224,14 +224,15 @@ LIMIT ?
 // AckCommand marks the command as delivered and stores the agent's result.
 // It returns the command, or sql.ErrNoRows when it was already acknowledged
 // (an agent re-acking after a lost response) or does not exist.
-func (d *DB) AckCommand(commandID, status, errMsg string) (*Command, error) {
+func (d *DB) AckCommand(commandID, status, errMsg, output string) (*Command, error) {
 	res, err := d.sql.Exec(`
-UPDATE commands SET delivered_at = ?, result_status = ?, result_error = ?
+UPDATE commands SET delivered_at = ?, result_status = ?, result_error = ?, result_output = ?
 WHERE id = ? AND delivered_at IS NULL
 `,
 		time.Now().UTC().Format(time.RFC3339Nano),
 		status,
 		errMsg,
+		output,
 		commandID,
 	)
 	if err != nil {
@@ -250,6 +251,59 @@ WHERE id = ? AND delivered_at IS NULL
 		return nil, err
 	}
 	return &command, nil
+}
+
+// CommandRecord is a stored command together with its delivery result, used
+// by the dashboard to show outcomes (e.g. remote PowerShell runs).
+type CommandRecord struct {
+	ID        string     `json:"id"`
+	AgentID   string     `json:"agentId"`
+	Action    string     `json:"action"`
+	AppName   string     `json:"appName,omitempty"`
+	Created   time.Time  `json:"createdAt"`
+	Delivered *time.Time `json:"deliveredAt,omitempty"`
+	Status    string     `json:"status"`           // "ok", "failed" or "" (pending)
+	Error     string     `json:"error,omitempty"`
+	Output    string     `json:"output,omitempty"`
+}
+
+// ListCommandsByAction returns the most recent commands of an action, newest
+// first, including pending ones.
+func (d *DB) ListCommandsByAction(action string, limit int) ([]CommandRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := d.sql.Query(`
+SELECT id, agent_id, action, COALESCE(app_name, ''), created_at, delivered_at,
+       COALESCE(result_status, ''), COALESCE(result_error, ''), COALESCE(result_output, '')
+FROM commands
+WHERE action = ?
+ORDER BY created_at DESC
+LIMIT ?
+`, action, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CommandRecord
+	for rows.Next() {
+		var rec CommandRecord
+		var created string
+		var delivered sql.NullString
+		if err := rows.Scan(&rec.ID, &rec.AgentID, &rec.Action, &rec.AppName, &created,
+			&delivered, &rec.Status, &rec.Error, &rec.Output); err != nil {
+			return nil, err
+		}
+		rec.Created, _ = time.Parse(time.RFC3339Nano, created)
+		if delivered.Valid && delivered.String != "" {
+			if t, err := time.Parse(time.RFC3339Nano, delivered.String); err == nil {
+				rec.Delivered = &t
+			}
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 func (d *DB) PendingCommandCount(agentID string) (int, error) {

@@ -18,7 +18,7 @@ func TestAckCommandStoresResultOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd, err := db.AckCommand("c1", "failed", "boom")
+	cmd, err := db.AckCommand("c1", "failed", "boom", "saida ps")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,15 +26,23 @@ func TestAckCommandStoresResultOnce(t *testing.T) {
 		t.Fatalf("unexpected command: %+v", cmd)
 	}
 
-	var status, msg string
-	if err := db.sql.QueryRow("SELECT result_status, result_error FROM commands WHERE id = 'c1'").Scan(&status, &msg); err != nil {
+	var status, msg, out string
+	if err := db.sql.QueryRow("SELECT result_status, result_error, result_output FROM commands WHERE id = 'c1'").Scan(&status, &msg, &out); err != nil {
 		t.Fatal(err)
 	}
-	if status != "failed" || msg != "boom" {
-		t.Fatalf("stored result = %q, %q", status, msg)
+	if status != "failed" || msg != "boom" || out != "saida ps" {
+		t.Fatalf("stored result = %q, %q, %q", status, msg, out)
 	}
 
-	if _, err := db.AckCommand("c1", "ok", ""); err != sql.ErrNoRows {
+	recs, err := db.ListCommandsByAction("start-app", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Status != "failed" || recs[0].Output != "saida ps" || recs[0].Delivered == nil {
+		t.Fatalf("ListCommandsByAction = %+v", recs)
+	}
+
+	if _, err := db.AckCommand("c1", "ok", "", ""); err != sql.ErrNoRows {
 		t.Fatalf("second ack err = %v, want sql.ErrNoRows", err)
 	}
 	if pending, _ := db.FetchPendingCommands("pc1", 10); len(pending) != 0 {

@@ -14,6 +14,7 @@ import (
 
 	"appguard/internal/buildinfo"
 	"appguard/internal/config"
+	proc "appguard/internal/process"
 	"appguard/internal/update"
 	"appguard/internal/watchdog"
 )
@@ -67,7 +68,7 @@ func RunAgentClient(ctx context.Context, cfg *config.Config, w *watchdog.Watchdo
 	})
 
 	done := newCommandLog(200)
-	runEvery(ctx, every, func() { fetchCommands(client, cfg, w, done) })
+	runEvery(ctx, every, func() { fetchCommands(ctx, client, cfg, w, done) })
 }
 
 func runEvery(ctx context.Context, every time.Duration, fn func()) {
@@ -261,7 +262,7 @@ func (l *commandLog) put(id string, r CommandResult) {
 	l.results[id] = r
 }
 
-func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog, done *commandLog) {
+func fetchCommands(ctx context.Context, client *http.Client, cfg *config.Config, w *watchdog.Watchdog, done *commandLog) {
 	url := strings.TrimRight(cfg.Controller.URL, "/") + "/api/v1/commands/" + cfg.AgentID
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 
@@ -287,11 +288,9 @@ func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 			continue
 		}
 
-		err := executeCommand(w, cmd)
-		result := CommandResult{Status: CommandOK}
-		if err != nil {
-			slog.Error("remote command failed", "command", cmd.Action, "app", cmd.AppName, "error", err)
-			result = CommandResult{Status: CommandFailed, Error: err.Error()}
+		result := executeCommand(ctx, w, cmd)
+		if result.Status == CommandFailed {
+			slog.Error("remote command failed", "command", cmd.Action, "app", cmd.AppName, "error", result.Error)
 		} else {
 			slog.Info("remote command applied", "command", cmd.Action, "app", cmd.AppName)
 		}
@@ -300,13 +299,42 @@ func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	}
 }
 
-func executeCommand(w *watchdog.Watchdog, cmd Command) error {
-	if cmd.Action != "apply-settings" {
-		return w.Apply(cmd.Action, cmd.AppName)
+func executeCommand(ctx context.Context, w *watchdog.Watchdog, cmd Command) CommandResult {
+	switch cmd.Action {
+	case "run-powershell":
+		return runPowerShellCommand(ctx, cmd)
+	case "apply-settings":
+		var settings config.AgentSettings
+		if err := json.Unmarshal(cmd.Payload, &settings); err != nil {
+			return CommandResult{Status: CommandFailed, Error: err.Error()}
+		}
+		return resultFromErr(w.ApplySettings(settings))
+	default:
+		return resultFromErr(w.Apply(cmd.Action, cmd.AppName))
 	}
-	var settings config.AgentSettings
-	if err := json.Unmarshal(cmd.Payload, &settings); err != nil {
-		return err
+}
+
+func runPowerShellCommand(ctx context.Context, cmd Command) CommandResult {
+	var req PowerShellRequest
+	if err := json.Unmarshal(cmd.Payload, &req); err != nil {
+		return CommandResult{Status: CommandFailed, Error: "payload inválido: " + err.Error()}
 	}
-	return w.ApplySettings(settings)
+	if strings.TrimSpace(req.Script) == "" {
+		return CommandResult{Status: CommandFailed, Error: "script vazio"}
+	}
+	timeout := time.Duration(req.TimeoutSeconds) * time.Second
+	output, err := proc.RunPowerShell(ctx, req.Script, timeout)
+	result := CommandResult{Status: CommandOK, Output: output}
+	if err != nil {
+		result.Status = CommandFailed
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func resultFromErr(err error) CommandResult {
+	if err != nil {
+		return CommandResult{Status: CommandFailed, Error: err.Error()}
+	}
+	return CommandResult{Status: CommandOK}
 }
