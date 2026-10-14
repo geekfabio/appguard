@@ -109,7 +109,7 @@ func main() {
 
 func parseArgs(args []string) (command, configPath string) {
 	command = "run"
-	configPath = "appguard.json"
+	configPath = defaultConfigPath()
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-config", "--config":
@@ -122,6 +122,14 @@ func parseArgs(args []string) (command, configPath string) {
 		}
 	}
 	return
+}
+
+func defaultConfigPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "appguard.json"
+	}
+	return filepath.Join(filepath.Dir(exe), "appguard.json")
 }
 
 func runAgent(ctx context.Context, configPath string) error {
