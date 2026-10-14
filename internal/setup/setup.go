@@ -2,8 +2,6 @@ package setup
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -20,14 +18,12 @@ type setupRequest struct {
 	Role          string               `json:"role"`
 	Group         string               `json:"group"`
 	ControllerURL string               `json:"controllerUrl"`
-	Token         string               `json:"token"`
 	CheckEvery    int                  `json:"checkEverySeconds"`
 	Applications  []config.Application `json:"applications"`
 }
 
 func Run(ctx context.Context, configPath string) error {
 	host, _ := os.Hostname()
-	token := randomToken()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -45,7 +41,6 @@ func Run(ctx context.Context, configPath string) error {
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page := strings.ReplaceAll(setupHTML, "{{PC_NAME}}", htmlEscape(host))
-		page = strings.ReplaceAll(page, "{{TOKEN}}", htmlEscape(token))
 		_, _ = w.Write([]byte(page))
 	})
 
@@ -81,10 +76,6 @@ func Run(ctx context.Context, configPath string) error {
 			http.Error(w, "role must be controller or agent", http.StatusBadRequest)
 			return
 		}
-		if req.Token == "" {
-			http.Error(w, "token is required", http.StatusBadRequest)
-			return
-		}
 		if req.Role == "agent" && strings.TrimSpace(req.ControllerURL) == "" {
 			http.Error(w, "controller URL is required for agents", http.StatusBadRequest)
 			return
@@ -102,7 +93,6 @@ func Run(ctx context.Context, configPath string) error {
 			CheckEvery: req.CheckEvery,
 			Controller: config.Controller{
 				URL: strings.TrimSpace(req.ControllerURL),
-				Token: req.Token,
 				PollEverySeconds: 5,
 				Listen: ":8443",
 				DatabasePath: "appguard.db",
@@ -160,14 +150,6 @@ func Run(ctx context.Context, configPath string) error {
 		_ = server.Shutdown(shutdownCtx)
 		return err
 	}
-}
-
-func randomToken() string {
-	var b [24]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "CHANGE-THIS-TOKEN"
-	}
-	return hex.EncodeToString(b[:])
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
@@ -229,7 +211,6 @@ input,select{width:100%;padding:11px 12px;background:#07111f;color:#fff;border:1
 <div class="full"><label>Controller URL</label><input id="controllerUrl" placeholder="http://192.168.1.10:8443"></div>
 </div>
 <div class="grid" style="margin-top:16px">
-<div class="full"><label>Shared token</label><input id="token" value="{{TOKEN}}"><div class="muted" style="margin-top:6px">Controller: keep or change this token. Agent: enter exactly the same token configured on the controller.</div></div>
 <div><label>Watchdog check interval (seconds)</label><input id="checkEvery" type="number" min="1" value="10"></div>
 </div>
 </div>
@@ -247,7 +228,6 @@ input,select{width:100%;padding:11px 12px;background:#07111f;color:#fff;border:1
 <script>
 let role='';
 let apps=[];
-const generatedToken='{{TOKEN}}';
 
 function setRole(next){
  role=next;
@@ -257,9 +237,6 @@ function setRole(next){
  const group=document.getElementById('group');
  if(next==='controller' && (group.value==='default'||group.value==='')) group.value='Controllers';
  if(next==='agent' && group.value==='Controllers') group.value='default';
- const token=document.getElementById('token');
- if(next==='agent' && token.value===generatedToken) token.value='';
- if(next==='controller' && token.value==='') token.value=generatedToken;
 }
 
 function addApp(app){
@@ -318,7 +295,6 @@ async function save(){
   role,
   group:document.getElementById('group').value,
   controllerUrl:document.getElementById('controllerUrl').value,
-  token:document.getElementById('token').value,
   checkEverySeconds:Number(document.getElementById('checkEvery').value),
   applications:apps
  };
