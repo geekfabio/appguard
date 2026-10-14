@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"appguard/internal/buildinfo"
 	"appguard/internal/config"
 	"appguard/internal/control"
 	"appguard/internal/service"
@@ -41,6 +42,18 @@ func main() {
 		st, err := service.Status(serviceName)
 		must(err)
 		fmt.Println(st)
+		return
+	case "version":
+		fmt.Println("AppGuard", buildinfo.Version)
+		return
+	case "enroll":
+		cfg, err := config.Load(configPath)
+		must(err)
+		if cfg.Controller.URL == "" {
+			must(fmt.Errorf("controller.url is required for enrollment"))
+		}
+		must(control.Enroll(cfg))
+		fmt.Println("AppGuard enrolled:", cfg.AgentID)
 		return
 	case "controller":
 		cfg, err := config.Load(configPath)
