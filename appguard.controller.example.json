@@ -8,7 +8,15 @@
     "url": "",
     "pollEverySeconds": 5,
     "listen": ":8443",
-    "databasePath": "appguard.db"
+    "databasePath": "appguard.db",
+    "agentUpdates": {
+      "enabled": true,
+      "maxConcurrent": 5
+    },
+    "auth": {
+      "username": "admin",
+      "password": "troque-esta-palavra-passe"
+    }
   },
   "applications": [
     {

@@ -102,14 +102,15 @@ GET /api/v1/commands/{agentId}
         ↓
 Agente executa
         ↓
-POST /api/v1/commands/ack/{commandId}
+POST /api/v1/commands/ack/{commandId}   {"status":"ok"|"failed","error":"..."}
         ↓
-Controller marca como entregue
+Controller marca como entregue, guarda o resultado e regista o evento
+(command-completed / remote-command-failed)
 ```
 
 Isto evita que uma ordem desapareça apenas porque o computador estava desligado ou temporariamente sem rede.
 
-A entrega segue uma estratégia **at-least-once**: se o agente executar um comando mas o ACK falhar por problema de rede, o comando pode voltar a ser recebido. Por isso, as operações do AppGuard devem continuar a ser tratadas de forma idempotente sempre que possível.
+A entrega segue uma estratégia **at-least-once**: se o agente executar um comando mas o ACK falhar por problema de rede, o comando pode voltar a ser recebido. Para evitar execuções duplicadas, o agente memoriza o resultado dos últimos 200 comandos: se receber de novo um comando já executado, limita-se a repetir o ACK.
 
 ## Enrollment
 
@@ -205,19 +206,136 @@ Exemplo:
 
 A configuração remota também utiliza a fila de comandos persistentes.
 
+## Actualização automática dos agentes
+
+O controlador e os agentes usam o mesmo `appguard.exe`. **Basta actualizar o controlador**: ele passa a oferecer o seu próprio executável e os agentes instalados como serviço actualizam-se sozinhos.
+
+Fluxo:
+
+```text
+Agente envia heartbeat com o SHA-256 do seu appguard.exe
+        ↓
+Controller compara com o seu próprio binário; se for diferente responde {"update": {...}}
+        ↓
+Agente descarrega GET /api/v1/update/agent → appguard.new.exe
+        ↓
+Confirma tamanho + SHA-256 e executa "appguard.new.exe version"
+        ↓
+appguard.exe → appguard.exe.old, appguard.new.exe → appguard.exe
+        ↓
+Serviço reinicia com a nova versão (as aplicações supervisionadas não são paradas)
+        ↓
+Após 2 minutos saudável a comunicar com o controller → actualização confirmada, .old apagado
+```
+
+Rollback: se a nova versão arrancar mais de 3 vezes sem chegar aos 2 minutos saudável, o agente repõe o `appguard.exe.old`, reinicia e nunca mais tenta aquele binário. O resultado aparece nos eventos: `agent-update-started`, `agent-update-restarting`, `agent-update-installed`, `agent-update-failed`, `agent-update-rolled-back`.
+
+Configuração no controlador (opcional):
+
+```json
+"controller": {
+  "agentUpdates": { "enabled": true, "maxConcurrent": 5 }
+}
+```
+
+- `enabled` (padrão `true`): desligue para congelar as versões dos agentes.
+- `maxConcurrent` (padrão 5): quantos agentes podem actualizar ao mesmo tempo. Um agente que não conclua em 15 minutos liberta a vaga e só volta a tentar 1 hora depois.
+
+Notas:
+- O controlador é a versão desejada: se voltar a instalar uma versão anterior no controlador, os agentes acompanham.
+- Só agentes a correr como serviço Windows se actualizam. A coluna **Versão** do dashboard mostra `⟳ a actualizar` ou `(actualização manual)` para agentes anteriores a esta funcionalidade, que precisam de ser actualizados uma última vez à mão.
+- `appguard.exe install` passa a configurar a recuperação automática do serviço (reinício após falha), necessária para o rollback.
+
+## Abertura de aplicações
+
+Campos opcionais por aplicação:
+
+```json
+{
+  "arguments": ["--modo", "loja"],
+  "environment": { "APP_ENV": "producao" },
+  "runAs": "auto"
+}
+```
+
+`runAs` define em que sessão do Windows a aplicação é aberta:
+
+| Valor | Comportamento |
+|---|---|
+| `auto` (padrão) | Abre no ambiente de trabalho do utilizador com sessão activa; sem utilizador ligado, arranca escondida na sessão 0. |
+| `user` | Abre sempre no ambiente de trabalho do utilizador (necessário para aplicações com janela quando o AppGuard corre como serviço). Falha se ninguém tiver sessão iniciada. |
+| `service` | Arranca escondida na sessão 0, com a conta do serviço (processos sem interface). |
+
+Antes de abrir, o AppGuard confirma que o executável e a pasta de trabalho existem. Depois de abrir, só reporta sucesso se o processo continuar vivo ao fim de 3 segundos; caso contrário reporta a falha com o código de saída.
+
+Acções por aplicação: `start-app` (abre já, sem esperar pelo watchdog, e repõe o contador de retries), `restart-app`, `stop-app`, `enable-app`, `disable-app`. Acções por agente: `start-all`, `restart-all`, `stop-all`, `enable-all`, `disable-all`.
+
+`restart` termina o processo, espera até 10 segundos que ele saia e só depois abre a nova instância.
+
 ## Segurança
 
-The token requirement has been removed in v1.1.1.
+### Login do dashboard
 
-This means the Controller API is intentionally unauthenticated and should only be exposed on a trusted LAN. Restrict TCP port 8443 with Windows Firewall to the internal subnet and do not expose the Controller directly to the public Internet.
+O dashboard e a API de administração (`/api/v1/admin/*`) ficam protegidos por um login de operador. As credenciais vêm, por ordem de prioridade, das variáveis de ambiente ou do ficheiro de configuração do controlador:
 
-Recommended:
+```bash
+# .env / variáveis de ambiente do serviço (recomendado)
+APPGUARD_ADMIN_USER=admin
+APPGUARD_ADMIN_PASSWORD=uma-palavra-passe-forte
+```
 
-- keep Controller and Agents on the same trusted LAN/VLAN;
-- restrict inbound TCP 8443 to the relevant subnet;
-- avoid public port-forwarding;
-- use VPN or network-level access control for remote administration;
-- keep arbitrary shell execution disabled.
+```json
+"controller": {
+  "auth": { "username": "admin", "password": "uma-palavra-passe-forte" }
+}
+```
+
+Se definir ambos, o ambiente ganha. Depois do login é criado um cookie de sessão (`HttpOnly`, válido 12 horas); há um botão **Sair** no dashboard.
+
+As ligações dos **agentes** (heartbeat, comandos, eventos, enrolamento e actualização) continuam **sem autenticação**, para que os agentes não precisem de credenciais. Se deixar utilizador e palavra-passe vazios, o login fica desligado (comportamento anterior).
+
+> O tráfego é HTTP simples. Mantenha o controlador numa LAN de confiança, restrinja a porta 8443 com a Firewall do Windows à sub-rede interna e não exponha o controlador diretamente à Internet. Para acesso remoto use VPN.
+
+Recomendado:
+
+- defina `APPGUARD_ADMIN_USER` / `APPGUARD_ADMIN_PASSWORD`;
+- mantenha Controller e Agents na mesma LAN/VLAN de confiança;
+- restrinja o acesso de entrada à porta 8443 à sub-rede relevante;
+- evite redireccionamento de portas público;
+- use VPN ou controlo de acesso de rede para administração remota.
+
+## Identidade do agente e informação do computador
+
+Cada agente tem uma **identidade estável por máquina**, para que o mesmo computador nunca apareça duplicado no controlador. A identidade é, por ordem de prioridade:
+
+1. a variável de ambiente `APPGUARD_AGENT_ID` (se definida);
+2. o `agentId` do config (se preenchido explicitamente);
+3. o **MachineGuid do Windows** (`HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`) — o valor por omissão.
+
+O MachineGuid é criado na instalação do Windows e **sobrevive a renomear o PC e a reinstalar o AppGuard**, por isso o agente mantém sempre a mesma linha no controlador. Fora do Windows, a identidade é o hostname.
+
+Além disso:
+
+- **Instância única por PC:** o agente toma um mutex global (`Global\AppGuard-Agent`); um segundo processo do agente no mesmo computador recusa-se a arrancar.
+- **Informação do computador:** cada heartbeat traz nome, versão do Windows, arquitectura, nº de CPUs, RAM, IPs, utilizador com sessão iniciada e uptime. O dashboard mostra o **nome do computador** como etiqueta principal (e o ID por baixo); a página de cada agente tem um painel **Sistema** com estes dados.
+
+> Clonar uma máquina com sysprep gera um novo MachineGuid (passa a ser, corretamente, um computador novo). Clonar **sem** sysprep mantém o mesmo GUID — nesse caso os clones partilham identidade; use sempre sysprep ao criar imagens.
+>
+> Como a identidade passou a ser o MachineGuid, agentes de versões anteriores (identificados pelo nome do PC) aparecem como linhas antigas offline depois da atualização. Remova-as no dashboard (botão **Remover**).
+
+## PowerShell remoto
+
+Na página **PowerShell** do dashboard (botão no topo) pode enviar um script para **todos os agentes**, para um **grupo** ou para **um agente**. O agente executa o script com o Windows PowerShell (`-NoProfile -NonInteractive -ExecutionPolicy Bypass`), captura a saída (stdout+stderr) e devolve-a ao controlador, que a mostra por agente com o estado (OK / Falhou / Pendente).
+
+Detalhes:
+
+- O comando entra na mesma fila persistente dos restantes: um PC offline executa quando voltar à rede.
+- O script corre **como SYSTEM**, escondido, na sessão do serviço. Reveja antes de enviar.
+- Timeout configurável (padrão 120 s, máximo 3600 s); ao esgotar, o processo é terminado e o resultado fica como falha.
+- O computador controlador nunca é incluído nos destinos.
+- Endpoints (protegidos pelo login): `POST /api/v1/admin/powershell` e `GET /api/v1/admin/powershell/results`.
+
+> Esta funcionalidade é execução remota de código na sua frota. Mantenha o controlador atrás do login e numa rede de confiança.
 
 ## Atraso inicial por aplicação
 
@@ -241,7 +359,7 @@ O mesmo comportamento aplica-se aos processos locais do computador controlador.
 5s → 10s → 30s → 60s → 120s
 ```
 
-O estado `restartPending` impede múltiplos restarts concorrentes.
+O estado `restartPending` impede múltiplos restarts concorrentes. Antes de executar um restart agendado, o AppGuard confirma que a aplicação continua activa na configuração e que não foi aberta entretanto.
 
 ## Compilar
 
@@ -291,8 +409,9 @@ GET  /api/v1/commands/{agentId}
 POST /api/v1/commands/ack/{commandId}
 
 GET  /api/v1/admin/agents
-GET  /api/v1/admin/events  # eventos temporários em memória
+GET  /api/v1/admin/events  # filtros: agentId, group, action, sinceHours, limit, format=csv
 GET  /api/v1/admin/agent-detail/{agentId}
+POST /api/v1/admin/agent-remove/{agentId}
 
 POST /api/v1/admin/broadcast/{action}
 POST /api/v1/admin/agent/{agentId}/{action}
@@ -301,9 +420,20 @@ POST /api/v1/admin/group/{group}/{action}
 POST /api/v1/admin/agent-app/{agentId}/{appName}/{action}
 PUT  /api/v1/admin/agent-settings/{agentId}
 
+POST /api/v1/admin/powershell          # enviar script (all/group/agent)
+GET  /api/v1/admin/powershell/results  # resultados por agente
+
+GET  /login   POST /login   GET /logout
+
 GET  /healthz
 GET  /readyz
 ```
+
+> Todos os endpoints `/api/v1/admin/*` e as páginas exigem o login do operador. Os endpoints de agentes ficam abertos.
+
+## Registo de eventos e retenção
+
+Os eventos do controlador são guardados no SQLite e consultáveis no dashboard com filtros por acção e por período, com exportação para CSV. Para manter os registos ao mínimo, **tudo o que tem mais de 2 dias é apagado automaticamente**: eventos e também comandos já entregues (os comandos ainda por entregar a agentes offline são sempre preservados). A limpeza corre ao arrancar e a cada 6 horas. Não há notificações nem alertas externos.
 
 ## SQLite
 
