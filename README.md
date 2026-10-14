@@ -1,23 +1,28 @@
 # AppGuard
 
-> **Versão actual: v0.5.0**
+> **Versão actual: v1.0.0**
 
 AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
-## Novidades da v0.5.0
+## Novidades da v1.0.0
 
-- comandos remotos persistentes em SQLite;
-- entrega de comandos a agentes que estavam offline;
-- protocolo de ACK após execução do comando;
-- estado dos comandos mantido até confirmação do agente;
-- comando `appguard.exe version`;
-- comando `appguard.exe enroll`;
-- endpoint de enrollment;
-- versão do agente enviada no heartbeat;
-- versão visível no dashboard;
-- instalação tenta fazer enrollment automaticamente;
-- GitHub Actions para testes e build Windows amd64;
-- artefacto `appguard.exe` gerado pelo pipeline CI.
+- o controlador também funciona como agente local e watchdog;
+- o PC controlador aparece no dashboard e supervisiona os próprios processos;
+- suporte a `role: "agent"` e `role: "controller"`;
+- controlo individual por aplicação;
+- comandos persistentes em SQLite com ACK;
+- entrega a agentes que estavam offline;
+- configuração remota estruturada;
+- enrollment e versionamento dos agentes;
+- endpoints `/healthz` e `/readyz`;
+- CI/build Windows amd64;
+- pacote de Release com binário, exemplos e scripts.
+
+## Controller Node
+
+No modo `role: "controller"`, o mesmo processo executa dashboard/API, SQLite, heartbeat, cliente de comandos e watchdog local.
+
+Use `appguard.controller.example.json`.
 
 ## Comandos persistentes
 
@@ -96,7 +101,7 @@ Existe um workflow:
 O pipeline executa:
 
 1. checkout;
-2. configuração do Go 1.23;
+2. configuração do Go 1.24;
 3. download das dependências;
 4. `go test ./...`;
 5. compilação para Windows amd64;
@@ -219,7 +224,7 @@ controller
 run
 ```
 
-## API v0.5
+## API v1.0
 
 ```text
 POST /api/v1/enroll
@@ -237,7 +242,11 @@ POST /api/v1/admin/broadcast/{action}
 POST /api/v1/admin/agent/{agentId}/{action}
 POST /api/v1/admin/group/{group}/{action}
 
+POST /api/v1/admin/agent-app/{agentId}/{appName}/{action}
 PUT  /api/v1/admin/agent-settings/{agentId}
+
+GET  /healthz
+GET  /readyz
 ```
 
 ## SQLite
@@ -292,5 +301,5 @@ A tabela `commands` armazena:
 ## Versão
 
 ```text
-AppGuard v0.5.0
+AppGuard v1.0.0
 ```
