@@ -103,6 +103,24 @@ func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	_ = resp.Body.Close()
 }
 
+func ackCommand(client *http.Client, cfg *config.Config, commandID string) {
+	if commandID == "" {
+		return
+	}
+	req, _ := http.NewRequest(
+		http.MethodPost,
+		strings.TrimRight(cfg.Controller.URL, "/")+"/api/v1/commands/ack/"+commandID,
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer "+cfg.Controller.Token)
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Debug("command ack failed", "commandId", commandID, "error", err)
+		return
+	}
+	_ = resp.Body.Close()
+}
+
 func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog) {
 	url := strings.TrimRight(cfg.Controller.URL, "/") + "/api/v1/commands/" + cfg.AgentID
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
@@ -140,8 +158,17 @@ func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 
 		if err != nil {
 			slog.Error("remote command failed", "command", cmd.Action, "error", err)
+			sendEvent(client, cfg, Event{
+				Time: time.Now(),
+				AgentID: cfg.AgentID,
+				Group: w.Settings().Group,
+				Action: "remote-command-failed",
+				AppName: cmd.AppName,
+				Detail: cmd.Action + ": " + err.Error(),
+			})
 		} else {
 			slog.Info("remote command applied", "command", cmd.Action, "app", cmd.AppName)
 		}
+		ackCommand(client, cfg, cmd.ID)
 	}
 }
