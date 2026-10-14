@@ -1,33 +1,123 @@
 param(
   [string]$InstallDir = "C:\Program Files\AppGuard",
-  [string]$ConfigSource = ".\appguard.json"
+  [string]$ConfigSource = ".\appguard.agent.json"
 )
 
 $ErrorActionPreference = "Stop"
+$ServiceName = "AppGuard"
+$SourceExe = ".\appguard.exe"
+$TargetExe = Join-Path $InstallDir "appguard.exe"
+$TargetConfig = Join-Path $InstallDir "appguard.json"
 
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+function Test-Administrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-Administrator)) {
   throw "Execute este script como Administrador."
 }
 
+if (-not (Test-Path $SourceExe)) {
+  throw "Nao foi encontrado: $SourceExe"
+}
+
+if (-not (Test-Path $ConfigSource)) {
+  throw "Nao foi encontrado o ficheiro de configuracao: $ConfigSource"
+}
+
+# Validar que esta configuracao e para um Agent.
+try {
+  $config = Get-Content $ConfigSource -Raw | ConvertFrom-Json
+} catch {
+  throw "JSON de configuracao invalido: $($_.Exception.Message)"
+}
+
+if ($config.role -ne "agent") {
+  throw "Este instalador e destinado aos Agents. O campo 'role' deve ser 'agent'."
+}
+
+if (-not $config.controller.url) {
+  throw "A configuracao do Agent nao possui controller.url."
+}
+
+Write-Host "A instalar AppGuard Agent..." -ForegroundColor Cyan
+Write-Host "Controller: $($config.controller.url)"
+Write-Host "Destino: $InstallDir"
+
+# Se ja existir uma instalacao, parar e remover o servico primeiro.
+$existingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+
+if ($null -ne $existingService) {
+  Write-Host "Foi encontrada uma instalacao existente. A parar o servico..."
+
+  if ($existingService.Status -ne "Stopped") {
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+
+    $timeout = 20
+    while ($timeout -gt 0) {
+      $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+      if ($null -eq $service -or $service.Status -eq "Stopped") {
+        break
+      }
+
+      Start-Sleep -Seconds 1
+      $timeout--
+    }
+  }
+
+  Write-Host "A remover o servico antigo..."
+  sc.exe delete $ServiceName | Out-Null
+
+  # Aguardar o Service Control Manager libertar o servico.
+  $timeout = 20
+  while ($timeout -gt 0) {
+    if ($null -eq (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+      break
+    }
+
+    Start-Sleep -Seconds 1
+    $timeout--
+  }
+}
+
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item ".\appguard.exe" "$InstallDir\appguard.exe" -Force
-Copy-Item $ConfigSource "$InstallDir\appguard.json" -Force
+
+Copy-Item $SourceExe $TargetExe -Force
+Copy-Item $ConfigSource $TargetConfig -Force
 
 Push-Location $InstallDir
 try {
-  .\appguard.exe install -config "$InstallDir\appguard.json"
-  sc.exe failure AppGuard reset= 3600 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-  try {
-    .\appguard.exe enroll -config "$InstallDir\appguard.json"
-    Write-Host "Agente registado no controlador."
-  } catch {
-    Write-Warning "Enrollment não concluído: $($_.Exception.Message)"
-  }
+  Write-Host "A instalar Windows Service..."
+  .\appguard.exe install -config $TargetConfig
 
+  # Arranque automatico e recuperacao em caso de falha.
+  sc.exe config $ServiceName start= auto | Out-Null
+  sc.exe failure $ServiceName reset= 3600 actions= restart/5000/restart/15000/restart/60000 | Out-Null
+  sc.exe failureflag $ServiceName 1 | Out-Null
+
+  Write-Host "A iniciar AppGuard Agent..."
   .\appguard.exe start
 } finally {
   Pop-Location
 }
 
-Write-Host "AppGuard instalado em $InstallDir"
+Start-Sleep -Seconds 2
+
+$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+if ($null -eq $service) {
+  throw "O servico AppGuard nao foi criado."
+}
+
+if ($service.Status -ne "Running") {
+  Write-Warning "O servico foi instalado, mas o estado actual e: $($service.Status)"
+} else {
+  Write-Host "AppGuard Agent instalado e em execucao." -ForegroundColor Green
+}
+
+Write-Host ""
+Write-Host "Configuracao: $TargetConfig"
+Write-Host "Agent ID: sera automaticamente o nome deste PC."
+Write-Host "Controller: $($config.controller.url)"
+Write-Host "Nao e necessario executar 'enroll'."
