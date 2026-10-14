@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"appguard/internal/buildinfo"
 	"appguard/internal/config"
 	"appguard/internal/storage"
 )
@@ -40,6 +41,16 @@ func RunController(cfg *config.Config) error {
 
 	st := &controllerState{
 		db: db,
+	}
+
+	if cfg.Role == "controller" {
+		status := map[string]any{
+			"role": "controller",
+			"version": buildinfo.Version,
+			"enabled": cfg.Enabled,
+			"apps": []any{},
+		}
+		_ = st.db.UpsertAgent(cfg.AgentID, cfg.Group, time.Now(), status)
 	}
 
 	mux := http.NewServeMux()
@@ -643,7 +654,7 @@ const q=(document.getElementById('search')?.value||'').toLowerCase();
 const group=document.getElementById('groupFilter')?.value||'';
 const state=document.getElementById('stateFilter')?.value||'';
 const agents=cachedAgents.filter(a=>(!q||(a.agentId+' '+a.group).toLowerCase().includes(q))&&(!group||a.group===group)&&(!state||(state==='online')===a.online));
-document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="commandAgent(\\''+esc(a.agentId)+'\\',\\'stop-all\\')">Parar</button></td></tr>'}).join('');
+document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="restart-all">Reiniciar</button> <button class="btn warn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="stop-all">Parar</button></td></tr>'}).join('');
 }
 async function refresh(){try{
 const [agents,events]=await Promise.all([api('/api/v1/admin/agents'),api('/api/v1/admin/events')]);
@@ -661,6 +672,8 @@ gf.value=oldGroup;
 renderAgents();
 document.getElementById('events').innerHTML=events.slice(0,120).map(e=>'<div class="event"><strong>'+esc(e.action)+'</strong> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.agentId||e.group||'global')+' — '+esc(e.detail||'')+'</div>').join('');
 }catch(e){console.error(e)}}
+document.addEventListener('click',e=>{const b=e.target.closest('.agent-action');if(!b)return;commandAgent(decodeURIComponent(b.dataset.agent),b.dataset.action)});
+document.addEventListener('click',e=>{const n=e.target.closest('.node-action');if(n){command(n.dataset.action);return}const a=e.target.closest('.app-action');if(a){commandApp(decodeURIComponent(a.dataset.app),a.dataset.action)}});
 refresh();setInterval(refresh,5000);
 </script></body></html>`
 
@@ -681,6 +694,6 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 async function command(action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function commandApp(name,action){await api('/api/v1/admin/agent-app/'+encodeURIComponent(id)+'/'+encodeURIComponent(name)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function saveSettings(){let body;try{body=JSON.parse(document.getElementById('settings').value)}catch(e){alert('JSON inválido');return}await api('/api/v1/admin/agent-settings/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});alert('Configuração enviada para o agente')}
-async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good" onclick="command(\\'enable-all\\')">Activar</button> <button class="btn" onclick="command(\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="command(\\'stop-all\\')">Parar</button> <button class="btn warn" onclick="command(\\'disable-all\\')">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good" onclick="commandApp(\\''+esc(p.name)+'\\',\\'enable-app\\')">Activar</button> <button class="btn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'restart-app\\')">Reiniciar</button> <button class="btn warn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'stop-app\\')">Parar</button> <button class="btn warn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'disable-app\\')">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
+async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good node-action" data-action="enable-all">Activar</button> <button class="btn node-action" data-action="restart-all">Reiniciar</button> <button class="btn warn node-action" data-action="stop-all">Parar</button> <button class="btn warn node-action" data-action="disable-all">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="enable-app">Activar</button> <button class="btn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="restart-app">Reiniciar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="stop-app">Parar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="disable-app">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
 refresh();setInterval(refresh,5000);
 </script></body></html>`
