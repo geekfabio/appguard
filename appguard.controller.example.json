@@ -1,0 +1,25 @@
+{
+  "agentId": "CONTROLLER-01",
+  "role": "controller",
+  "group": "Controllers",
+  "enabled": true,
+  "checkEverySeconds": 10,
+  "controller": {
+    "url": "",
+    "token": "CHANGE-THIS-LONG-RANDOM-TOKEN",
+    "pollEverySeconds": 5,
+    "listen": ":8443",
+    "databasePath": "appguard.db"
+  },
+  "applications": [
+    {
+      "name": "ProcessoLocalDoController",
+      "path": "C:\\Apps\\ControllerWorker\\worker.exe",
+      "workingDirectory": "C:\\Apps\\ControllerWorker",
+      "enabled": true,
+      "autoRestart": true,
+      "maxRetries": 5,
+      "resetAfterSeconds": 300
+    }
+  ]
+}
