@@ -1,6 +1,6 @@
 # AppGuard
 
-> **Versão actual: v1.1.0**
+> **Versão actual: v1.1.1**
 
 AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
@@ -30,6 +30,7 @@ The wizard:
 - supports multiple monitored applications;
 - configures the startup delay, retries and working directory;
 - asks for the Controller URL only when configuring an Agent;
+- does not require a shared token;
 - writes `appguard.json` next to `appguard.exe`;
 - starts AppGuard immediately after saving.
 
@@ -77,25 +78,13 @@ A entrega segue uma estratégia **at-least-once**: se o agente executar um coman
 
 ## Enrollment
 
-Depois de configurar `controller.url` e `controller.token`:
+Agents can enroll without a token:
 
 ```powershell
 .\appguard.exe enroll -config .\appguard.json
 ```
 
-Exemplo de resposta:
-
-```text
-AppGuard enrolled: PC-001
-```
-
-O instalador PowerShell tenta efectuar o enrollment automaticamente. Se o controlador não estiver disponível, a instalação continua e o agente poderá comunicar posteriormente através do heartbeat normal.
-
-Endpoint:
-
-```text
-POST /api/v1/enroll
-```
+The Controller URL must still be configured on Agent machines.
 
 ## Versionamento
 
@@ -183,24 +172,17 @@ A configuração remota também utiliza a fila de comandos persistentes.
 
 ## Segurança
 
-A v0.5.0 continua destinada principalmente a uma LAN controlada.
+The token requirement has been removed in v1.1.1.
 
-Actualmente:
+This means the Controller API is intentionally unauthenticated and should only be exposed on a trusted LAN. Restrict TCP port 8443 with Windows Firewall to the internal subnet and do not expose the Controller directly to the public Internet.
 
-- APIs protegidas por Bearer Token;
-- configuração remota apenas estruturada;
-- sem execução arbitrária de PowerShell/CMD;
-- sem execução remota de scripts;
-- comandos persistidos localmente no SQLite.
+Recommended:
 
-Ainda não estão implementados:
-
-- TLS interno automático;
-- autenticação individual por dispositivo;
-- assinatura/verificação criptográfica de actualizações;
-- RBAC.
-
-Por isso, o auto-update completo foi deliberadamente adiado até existir validação criptográfica da versão distribuída.
+- keep Controller and Agents on the same trusted LAN/VLAN;
+- restrict inbound TCP 8443 to the relevant subnet;
+- avoid public port-forwarding;
+- use VPN or network-level access control for remote administration;
+- keep arbitrary shell execution disabled.
 
 ## Atraso inicial por aplicação
 
@@ -340,5 +322,5 @@ A tabela `commands` armazena:
 ## Versão
 
 ```text
-AppGuard v1.1.0
+AppGuard v1.1.1
 ```
