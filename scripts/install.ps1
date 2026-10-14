@@ -23,27 +23,31 @@ if (-not (Test-Path $SourceExe)) {
   throw "Nao foi encontrado: $SourceExe"
 }
 
-if (-not (Test-Path $ConfigSource)) {
-  throw "Nao foi encontrado o ficheiro de configuracao: $ConfigSource"
-}
+$hasConfig = Test-Path $ConfigSource
+$config = $null
 
-# Validar que esta configuracao e para um Agent.
-try {
-  $config = Get-Content $ConfigSource -Raw | ConvertFrom-Json
-} catch {
-  throw "JSON de configuracao invalido: $($_.Exception.Message)"
-}
+if ($hasConfig) {
+  try {
+    $config = Get-Content $ConfigSource -Raw | ConvertFrom-Json
+  } catch {
+    throw "JSON de configuracao invalido: $($_.Exception.Message)"
+  }
 
-if ($config.role -ne "agent") {
-  throw "Este instalador e destinado aos Agents. O campo 'role' deve ser 'agent'."
-}
+  if ($config.role -ne "agent") {
+    throw "Este instalador e destinado aos Agents. O campo 'role' deve ser 'agent'."
+  }
 
-if (-not $config.controller.url) {
-  throw "A configuracao do Agent nao possui controller.url."
+  if (-not $config.controller.url) {
+    throw "A configuracao do Agent nao possui controller.url."
+  }
 }
 
 Write-Host "A instalar AppGuard Agent..." -ForegroundColor Cyan
-Write-Host "Controller: $($config.controller.url)"
+if ($hasConfig) {
+  Write-Host "Controller: $($config.controller.url)"
+} else {
+  Write-Host "Nenhum JSON inicial encontrado. O wizard visual sera aberto."
+}
 Write-Host "Destino: $InstallDir"
 
 # Se ja existir uma instalacao, parar e remover o servico primeiro.
@@ -85,7 +89,36 @@ if ($null -ne $existingService) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 
 Copy-Item $SourceExe $TargetExe -Force
-Copy-Item $ConfigSource $TargetConfig -Force
+
+if ($hasConfig) {
+  Copy-Item $ConfigSource $TargetConfig -Force
+} else {
+  Write-Host "A abrir configuracao visual do AppGuard Agent..."
+  Push-Location $InstallDir
+  try {
+    .\appguard.exe setup -config $TargetConfig
+  } finally {
+    Pop-Location
+  }
+
+  if (-not (Test-Path $TargetConfig)) {
+    throw "A configuracao nao foi criada. Instalacao cancelada."
+  }
+
+  try {
+    $config = Get-Content $TargetConfig -Raw | ConvertFrom-Json
+  } catch {
+    throw "O JSON criado pelo wizard e invalido: $($_.Exception.Message)"
+  }
+
+  if ($config.role -ne "agent") {
+    throw "O wizard nao foi concluido como Agent."
+  }
+
+  if (-not $config.controller.url) {
+    throw "A configuracao criada nao possui controller.url."
+  }
+}
 
 Push-Location $InstallDir
 try {
