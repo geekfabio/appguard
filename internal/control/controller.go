@@ -415,6 +415,53 @@ func RunController(cfg *config.Config) error {
 		writeJSON(w, map[string]any{"accepted": count})
 	}))
 
+	mux.HandleFunc("/api/v1/admin/agent-app/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agent-app/")
+		parts := strings.Split(rest, "/")
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || !validAppAction(parts[2]) {
+			http.Error(w, "expected /agent-app/{agentId}/{appName}/{action}", http.StatusBadRequest)
+			return
+		}
+
+		agentID, appName, action := parts[0], parts[1], parts[2]
+		a, err := st.db.GetAgent(agentID)
+		if err == sql.ErrNoRows {
+			http.Error(w, "unknown agent", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if err := st.db.QueueCommand(storage.Command{
+			ID: fmt.Sprintf("%d-%s", time.Now().UnixNano(), agentID),
+			AgentID: agentID,
+			Action: action,
+			AppName: appName,
+			Created: time.Now(),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		_ = st.db.AddEvent(storage.Event{
+			Time: time.Now(),
+			AgentID: agentID,
+			Group: a.Group,
+			Action: action,
+			AppName: appName,
+			Detail: "Comando por aplicação colocado na fila",
+		})
+
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
 	mux.HandleFunc("/api/v1/admin/agent-settings/", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -501,6 +548,15 @@ func (s *controllerState) auth(next http.HandlerFunc) http.HandlerFunc {
 func validAction(a string) bool {
 	switch a {
 	case "disable-all", "enable-all", "stop-all", "restart-all":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAppAction(a string) bool {
+	switch a {
+	case "disable-app", "enable-app", "stop-app", "restart-app":
 		return true
 	default:
 		return false
@@ -604,7 +660,7 @@ body{font-family:Inter,system-ui;background:#07111f;color:#e8edf7;margin:0}.wrap
 </style></head><body><div class="wrap"><a href="/">← Dashboard</a><h1 id="title">Agente</h1>
 <div><input id="token" type="password" placeholder="Token Bearer"> <button class="btn" onclick="saveToken()">Guardar token</button></div>
 <div class="panel"><h2>Estado</h2><div class="body" id="summary">A carregar...</div></div>
-<div class="panel"><h2>Processos</h2><div class="body"><table><thead><tr><th>Aplicação</th><th>Estado</th><th>Retries</th><th>PIDs</th></tr></thead><tbody id="apps"></tbody></table></div></div>
+<div class="panel"><h2>Processos</h2><div class="body"><table><thead><tr><th>Aplicação</th><th>Estado</th><th>Retries</th><th>PIDs</th><th>Acções</th></tr></thead><tbody id="apps"></tbody></table></div></div>
 <div class="panel"><h2>Configuração remota</h2><div class="body"><p class="muted">Altere apenas grupo, intervalo e aplicações. Não são executados comandos shell.</p><textarea id="settings"></textarea><br><br><button class="btn good" onclick="saveSettings()">Enviar configuração</button></div></div>
 <div class="panel"><h2>Histórico</h2><div class="body" id="events"></div></div>
 </div><script>
@@ -613,7 +669,8 @@ function saveToken(){localStorage.setItem('appguard_token',token.value);refresh(
 async function api(path,opts={}){opts.headers={...(opts.headers||{}),'Authorization':'Bearer '+token.value};const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function command(action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
+async function commandApp(name,action){await api('/api/v1/admin/agent-app/'+encodeURIComponent(id)+'/'+encodeURIComponent(name)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function saveSettings(){let body;try{body=JSON.parse(document.getElementById('settings').value)}catch(e){alert('JSON inválido');return}await api('/api/v1/admin/agent-settings/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});alert('Configuração enviada para o agente')}
-async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good" onclick="command(\\'enable-all\\')">Activar</button> <button class="btn" onclick="command(\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="command(\\'stop-all\\')">Parar</button> <button class="btn warn" onclick="command(\\'disable-all\\')">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
+async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good" onclick="command(\\'enable-all\\')">Activar</button> <button class="btn" onclick="command(\\'restart-all\\')">Reiniciar</button> <button class="btn warn" onclick="command(\\'stop-all\\')">Parar</button> <button class="btn warn" onclick="command(\\'disable-all\\')">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good" onclick="commandApp(\\''+esc(p.name)+'\\',\\'enable-app\\')">Activar</button> <button class="btn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'restart-app\\')">Reiniciar</button> <button class="btn warn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'stop-app\\')">Parar</button> <button class="btn warn" onclick="commandApp(\\''+esc(p.name)+'\\',\\'disable-app\\')">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
 refresh();setInterval(refresh,5000);
 </script></body></html>`
