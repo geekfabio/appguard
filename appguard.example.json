@@ -1,5 +1,6 @@
 {
   "agentId": "PC-001",
+  "role": "agent",
   "group": "Loja-01",
   "enabled": true,
   "checkEverySeconds": 10,
