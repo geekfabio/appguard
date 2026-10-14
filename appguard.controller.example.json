@@ -6,7 +6,6 @@
   "checkEverySeconds": 10,
   "controller": {
     "url": "",
-    "token": "CHANGE-THIS-LONG-RANDOM-TOKEN",
     "pollEverySeconds": 5,
     "listen": ":8443",
     "databasePath": "appguard.db"
