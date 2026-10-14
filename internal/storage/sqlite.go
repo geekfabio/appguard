@@ -287,3 +287,8 @@ func (d *DB) PendingCommandCount(agentID string) (int, error) {
 	).Scan(&count)
 	return count, err
 }
+
+
+func (d *DB) Ping() error {
+	return d.sql.Ping()
+}
