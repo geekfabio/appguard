@@ -10,9 +10,16 @@ import (
 type Heartbeat struct {
 	AgentID   string               `json:"agentId"`
 	Group     string               `json:"group"`
+	Version   string               `json:"version"`
 	Timestamp time.Time            `json:"timestamp"`
 	Status    map[string]any       `json:"status"`
 	Settings  config.AgentSettings `json:"settings"`
+}
+
+type Enrollment struct {
+	AgentID string `json:"agentId"`
+	Group   string `json:"group"`
+	Version string `json:"version"`
 }
 
 type Command struct {
