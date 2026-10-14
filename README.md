@@ -1,113 +1,118 @@
 # AppGuard
 
-MVP em Go para Windows Server/Windows Client destinado a manter processos em segundo plano activos e permitir controlo centralizado na LAN.
+AppGuard é um supervisor de processos Windows escrito em Go, com controlo centralizado pela rede local.
 
-## Funcionalidades
+## v0.2
 
-- Executa como Windows Service.
-- Arranca automaticamente com o Windows.
-- Monitoriza múltiplos executáveis.
-- Reinicia processos que terminem inesperadamente.
-- Retry progressivo: 5s, 10s, 30s, 60s e 120s.
-- Guarda `enabled/disabled` no ficheiro local.
-- Um único binário pode funcionar como agente ou controlador.
-- Heartbeat dos agentes.
-- Comandos de broadcast:
-  - `disable-all`
-  - `enable-all`
-  - `stop-all`
-  - `restart-all`
+A v0.2 acrescenta:
+
+- dashboard web embutido no mesmo binário;
+- estado Online/Offline por computador;
+- grupos de máquinas;
+- comandos globais;
+- comandos por computador;
+- histórico de eventos do controlador;
+- contagem de processos activos;
+- polling automático do dashboard;
+- autenticação Bearer nas APIs administrativas.
+
+## Arquitectura
+
+Cada computador executa o AppGuard como Windows Service. O agente mantém os processos configurados activos e comunica periodicamente com um controlador central.
+
+O controlador pode ser executado num único PC da LAN:
+
+\`\`\`powershell
+.\appguard.exe controller -config .\appguard.json
+\`\`\`
+
+Abrir no navegador:
+
+\`\`\`text
+http://IP-DO-CONTROLADOR:8443
+\`\`\`
+
+O dashboard pede o token Bearer configurado em \`controller.token\`.
+
+## Funcionalidades do agente
+
+- arranque automático com o Windows;
+- supervisão de múltiplos executáveis;
+- retry progressivo: 5s, 10s, 30s, 60s e 120s;
+- configuração local persistente;
+- execução sem sessão interactiva;
+- heartbeat para o controlador;
+- recepção de comandos remotos.
+
+## Comandos remotos
+
+- \`enable-all\`
+- \`disable-all\`
+- \`restart-all\`
+- \`stop-all\`
+
+Os comandos podem ser enviados globalmente ou a uma máquina específica.
+
+## Grupos
+
+Cada agente pode ser associado a um grupo:
+
+\`\`\`json
+{
+  "agentId": "PC-001",
+  "group": "Loja-01"
+}
+\`\`\`
+
+Isto prepara a aplicação para comandos por grupo, por exemplo:
+
+\`\`\`text
+POST /api/v1/admin/group/Loja-01/restart-all
+\`\`\`
 
 ## Compilar
 
-No Windows:
-
-```powershell
+\`\`\`powershell
 go mod tidy
 go build -o appguard.exe ./cmd/appguard
-```
+\`\`\`
 
-Cross-compile:
+## Instalar como serviço
 
-```powershell
-$env:GOOS="windows"
-$env:GOARCH="amd64"
-go build -o appguard.exe ./cmd/appguard
-```
+Executar como Administrador:
 
-## Configuração
-
-```powershell
+\`\`\`powershell
 Copy-Item appguard.example.json appguard.json
-```
-
-Em cada PC, definir um `agentId` único e o endereço do PC controlador.
-
-## PC controlador
-
-```powershell
-.\appguard.exe controller -config .\appguard.json
-```
-
-Consultar agentes:
-
-```powershell
-$headers = @{ Authorization = "Bearer CHANGE-THIS-LONG-RANDOM-TOKEN" }
-Invoke-RestMethod http://127.0.0.1:8443/api/v1/admin/agents -Headers $headers
-```
-
-Desactivar supervisão em todos:
-
-```powershell
-.\scripts\control.ps1 -Action disable-all -Controller http://127.0.0.1:8443 -Token "CHANGE-THIS-LONG-RANDOM-TOKEN"
-```
-
-Parar imediatamente todos os processos supervisionados:
-
-```powershell
-.\scripts\control.ps1 -Action stop-all -Controller http://127.0.0.1:8443 -Token "CHANGE-THIS-LONG-RANDOM-TOKEN"
-```
-
-## Agentes
-
-```powershell
 .\scripts\install.ps1 -ConfigSource .\appguard.json
-```
+\`\`\`
 
 Ou manualmente:
 
-```powershell
+\`\`\`powershell
 .\appguard.exe install -config "C:\Program Files\AppGuard\appguard.json"
 .\appguard.exe start
-```
-
-## Semântica dos comandos
-
-- `disable-all`: impede novas recuperações automáticas; não mata imediatamente processos já activos.
-- `enable-all`: volta a activar a supervisão.
-- `stop-all`: termina imediatamente todos os processos supervisionados.
-- `restart-all`: reinicia todos os processos supervisionados.
+\`\`\`
 
 ## Segurança
 
-Este MVP usa um token Bearer partilhado. Para produção:
+O MVP/v0.2 usa Bearer Token partilhado. Para produção recomenda-se:
 
-1. usar HTTPS/TLS;
-2. gerar tokens diferentes por agente;
-3. limitar o firewall à sub-rede;
-4. assinar digitalmente o executável;
-5. adicionar logs de auditoria;
-6. não permitir execução remota de PowerShell/cmd nem caminhos arbitrários;
-7. implementar rotação de credenciais;
-8. criar confirmação adicional para comandos globais.
+1. HTTPS/TLS;
+2. token distinto por dispositivo;
+3. firewall limitado à sub-rede;
+4. assinatura digital do executável;
+5. auditoria persistente;
+6. rotação de credenciais;
+7. não permitir comandos arbitrários de shell;
+8. confirmação adicional para operações globais destrutivas.
 
 ## Próximos passos
 
-- Dashboard web no próprio binário Go.
-- Comandos por computador e grupos.
-- Persistência SQLite no controlador.
-- Histórico de uptime, falhas e retries.
-- Actualização segura do agente.
-- Descoberta/registo automático de computadores.
-- TLS interno e autenticação por dispositivo.
-- Instalador MSI/EXE.
+- persistência SQLite para agentes, eventos e comandos;
+- autenticação do dashboard com utilizadores;
+- actualizações automáticas assinadas;
+- instalador MSI/EXE;
+- configuração remota das aplicações;
+- TLS interno;
+- descoberta/enrollment automático dos agentes;
+- dashboard de uptime, falhas e retries.
