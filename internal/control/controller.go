@@ -19,7 +19,6 @@ const offlineAfter = 20 * time.Second
 
 type controllerState struct {
 	mu    sync.RWMutex
-	token string
 	db    *storage.DB
 }
 
@@ -39,7 +38,6 @@ func RunController(cfg *config.Config) error {
 	defer db.Close()
 
 	st := &controllerState{
-		token: cfg.Controller.Token,
 		db: db,
 	}
 
@@ -536,13 +534,7 @@ func (s *controllerState) enqueueLocked(agentID, action, appName string) {
 }
 
 func (s *controllerState) auth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if s.token == "" || r.Header.Get("Authorization") != "Bearer "+s.token {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next(w, r)
-	}
+	return next
 }
 
 func validAction(a string) bool {
@@ -598,7 +590,6 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 <body>
 <header><h1>AppGuard Control Center <span class="muted">v1.0.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
 <main>
-<div class="toolbar"><input id="token" type="password" placeholder="Token Bearer"><button class="btn" onclick="saveToken()">Guardar token</button></div>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
 <div class="cards">
 <div class="card"><div class="label">Computadores</div><div class="metric" id="total">0</div></div>
@@ -619,10 +610,8 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 <section class="panel"><h2>Eventos persistentes</h2><div class="events" id="events"></div></section>
 </main>
 <script>
-let cachedAgents=[]; const tokenInput=document.getElementById('token');tokenInput.value=localStorage.getItem('appguard_token')||'';
-function saveToken(){localStorage.setItem('appguard_token',tokenInput.value);refresh()}
-function headers(){return {'Authorization':'Bearer '+tokenInput.value}}
-async function api(path,options={}){options.headers={...(options.headers||{}),...headers()};const r=await fetch(path,options);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
+let cachedAgents=[];
+async function api(path,options={}){options.headers={...(options.headers||{})};const r=await fetch(path,options);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
 async function commandAgent(id,action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function broadcast(action){if(!confirm('Executar '+action+' em todos os agentes?'))return;await api('/api/v1/admin/broadcast/'+action,{method:'POST'});setTimeout(refresh,500)}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
@@ -658,15 +647,13 @@ const agentHTML = `<!doctype html>
 <style>
 body{font-family:Inter,system-ui;background:#07111f;color:#e8edf7;margin:0}.wrap{max-width:1100px;margin:auto;padding:28px}.panel{background:#0d1c2d;border:1px solid #20344e;border-radius:14px;margin:16px 0;overflow:hidden}.panel h2{font-size:16px;padding:14px 18px;margin:0;border-bottom:1px solid #20344e}.body{padding:18px}.btn{background:#183451;color:#fff;border:1px solid #2a4b6b;border-radius:9px;padding:8px 12px;cursor:pointer}.warn{background:#5b2c22}.good{background:#164733}.muted{color:#8fa5bf}table{width:100%;border-collapse:collapse}th,td{padding:11px;border-bottom:1px solid #172b42;text-align:left;font-size:13px}input,textarea{background:#07111f;color:#fff;border:1px solid #2b4564;border-radius:8px;padding:9px}textarea{width:100%;min-height:300px;font-family:Consolas,monospace}a{color:#8fc7ff}
 </style></head><body><div class="wrap"><a href="/">← Dashboard</a><h1 id="title">Agente</h1>
-<div><input id="token" type="password" placeholder="Token Bearer"> <button class="btn" onclick="saveToken()">Guardar token</button></div>
 <div class="panel"><h2>Estado</h2><div class="body" id="summary">A carregar...</div></div>
 <div class="panel"><h2>Processos</h2><div class="body"><table><thead><tr><th>Aplicação</th><th>Estado</th><th>Retries</th><th>PIDs</th><th>Acções</th></tr></thead><tbody id="apps"></tbody></table></div></div>
 <div class="panel"><h2>Configuração remota</h2><div class="body"><p class="muted">Altere apenas grupo, intervalo e aplicações. Não são executados comandos shell.</p><textarea id="settings"></textarea><br><br><button class="btn good" onclick="saveSettings()">Enviar configuração</button></div></div>
 <div class="panel"><h2>Histórico</h2><div class="body" id="events"></div></div>
 </div><script>
-const id=decodeURIComponent('{{AGENT_ID}}');const token=document.getElementById('token');token.value=localStorage.getItem('appguard_token')||'';document.getElementById('title').textContent='Agente '+id;
-function saveToken(){localStorage.setItem('appguard_token',token.value);refresh()}
-async function api(path,opts={}){opts.headers={...(opts.headers||{}),'Authorization':'Bearer '+token.value};const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
+const id=decodeURIComponent('{{AGENT_ID}}');document.getElementById('title').textContent='Agente '+id;
+async function api(path,opts={}){opts.headers={...(opts.headers||{})};const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());if(r.status===204)return null;return r.json()}
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function command(action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function commandApp(name,action){await api('/api/v1/admin/agent-app/'+encodeURIComponent(id)+'/'+encodeURIComponent(name)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
