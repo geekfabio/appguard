@@ -14,6 +14,7 @@ import (
 	"appguard/internal/config"
 	"appguard/internal/control"
 	"appguard/internal/service"
+	"appguard/internal/setup"
 	"appguard/internal/watchdog"
 )
 
@@ -46,6 +47,12 @@ func main() {
 		return
 	case "version":
 		fmt.Println("AppGuard", buildinfo.Version)
+		return
+	case "setup":
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+		must(setup.Run(ctx, configPath))
+		fmt.Println("AppGuard configuration saved:", configPath)
 		return
 	case "enroll":
 		cfg, err := config.Load(configPath)
@@ -85,6 +92,18 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		slog.Info("no configuration found; opening first-run setup", "config", configPath)
+		must(setup.Run(ctx, configPath))
+	}
+
+	cfg, err := config.Load(configPath)
+	must(err)
+	if cfg.Role == "controller" {
+		must(runControllerNode(ctx, configPath))
+		return
+	}
 	must(runAgent(ctx, configPath))
 }
 
