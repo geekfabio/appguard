@@ -171,6 +171,19 @@ func controllerReachableURL(port string) string {
 		fallback = "127.0.0.1"
 	}
 
+	// Prefer the IPv4 address used by the default route. This avoids
+	// accidentally publishing Hyper-V, Docker, VPN or loopback adapters.
+	if conn, err := net.Dial("udp4", "8.8.8.8:80"); err == nil {
+		if local, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			ip := local.IP.To4()
+			if ip != nil && !ip.IsLoopback() {
+				_ = conn.Close()
+				return "http://" + ip.String() + port
+			}
+		}
+		_ = conn.Close()
+	}
+
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
