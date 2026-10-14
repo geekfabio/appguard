@@ -1,40 +1,44 @@
-# AppGuard v1.0.1
+# AppGuard v1.1.0
 
-Patch de comportamento de inicialização.
+This release adds a visual first-run configuration experience so AppGuard no longer requires manual JSON editing for initial setup.
 
-## Novidade
+## First-run wizard
 
-Foi adicionado um atraso inicial configurável por aplicação:
+When `appguard.json` is missing, running `appguard.exe` now opens a local setup interface automatically.
 
-```json
-{
-  "startupDelaySeconds": 60
-}
+The interface allows you to:
+
+- choose **Controller** or **Agent**;
+- use the Windows computer name automatically as the agent ID;
+- select the monitored `.exe` using a native Windows file picker;
+- add multiple monitored applications;
+- configure the watchdog check interval;
+- configure startup delay and retry settings;
+- enter the Controller URL and shared token for Agent machines;
+- generate a secure token by default for a Controller.
+
+The configuration is saved beside `appguard.exe`.
+
+The setup interface can also be reopened manually:
+
+```powershell
+.\appguard.exe setup
 ```
 
-Por defeito, cada aplicação supervisionada aguarda **60 segundos** após o arranque do AppGuard antes da primeira tentativa de inicialização.
+## Controller behavior
 
-Durante este período:
+The Controller continues to behave as an Agent on its own computer. It runs the local watchdog and checks the applications configured on the Controller itself.
 
-- o AppGuard não inicia a aplicação;
-- não consome retries;
-- não agenda restarts;
-- continua activo e pode comunicar com o controlador.
+If a monitored local process is not running, AppGuard starts it after the configured `startupDelaySeconds` and then uses the normal retry policy.
 
-Ao terminar o atraso, se o processo não estiver a correr, o AppGuard tenta iniciá-lo imediatamente.
+## Agent ID
 
-Depois da inicialização, as falhas passam a seguir a política normal:
+`agentId` is now always derived from the Windows PC name using the operating system hostname.
 
-```text
-5s → 10s → 30s → 60s → 120s
-```
+## Application selection
 
-O campo é configurável individualmente por aplicação e também pode ser alterado através da configuração remota estruturada.
+The setup wizard uses the native Windows executable picker, so the user can browse to the application to monitor instead of typing its path manually.
 
-## Controller Node
+## Compatibility
 
-O mesmo comportamento aplica-se aos processos locais supervisionados pelo computador controlador.
-
-## Compatibilidade
-
-Configurações antigas sem `startupDelaySeconds` recebem automaticamente o valor padrão de **60 segundos**.
+Existing JSON configuration files continue to work. On load, the current computer name overrides a manually stored `agentId` so each machine identifies itself consistently.
