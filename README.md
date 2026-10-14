@@ -1,6 +1,6 @@
 # AppGuard
 
-> **Versão actual: v1.0.1**
+> **Versão actual: v1.1.0**
 
 AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
@@ -17,6 +17,29 @@ AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog l
 - endpoints `/healthz` e `/readyz`;
 - CI/build Windows amd64;
 - pacote de Release com binário, exemplos e scripts.
+
+## First-run visual setup
+
+If `appguard.json` does not exist, running `appguard.exe` opens the AppGuard setup wizard automatically in the browser.
+
+The wizard:
+
+- detects the Windows computer name and uses it as the `agentId`;
+- asks whether the machine is a **Controller** or **Agent**;
+- lets you choose the application executable with a native Windows file picker;
+- supports multiple monitored applications;
+- configures the startup delay, retries and working directory;
+- asks for the Controller URL only when configuring an Agent;
+- writes `appguard.json` next to `appguard.exe`;
+- starts AppGuard immediately after saving.
+
+You can reopen the wizard manually with:
+
+```powershell
+.\appguard.exe setup
+```
+
+The computer name is always used as the agent ID, even if an `agentId` value is manually changed in JSON.
 
 ## Controller Node
 
@@ -85,7 +108,7 @@ Consultar a versão instalada:
 Resultado:
 
 ```text
-AppGuard 0.5.0
+AppGuard 1.1.0
 ```
 
 O heartbeat inclui a versão do agente e o dashboard apresenta essa informação por computador.
@@ -101,7 +124,7 @@ Existe um workflow:
 O pipeline executa:
 
 1. checkout;
-2. configuração do Go 1.24;
+2. configuração do Go 1.26;
 3. download das dependências;
 4. `go test ./...`;
 5. compilação para Windows amd64;
@@ -317,5 +340,5 @@ A tabela `commands` armazena:
 ## Versão
 
 ```text
-AppGuard v1.0.1
+AppGuard v1.1.0
 ```
