@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -34,6 +35,10 @@ type Application struct {
 	MaxRetries        int    `json:"maxRetries"`
 	ResetAfterSeconds  int    `json:"resetAfterSeconds"`
 	StartupDelaySeconds int   `json:"startupDelaySeconds"`
+	Arguments         []string          `json:"arguments,omitempty"`
+	Environment       map[string]string `json:"environment,omitempty"`
+	// RunAs: "auto" (default), "user" or "service". See process.StartOptions.
+	RunAs             string            `json:"runAs,omitempty"`
 }
 
 type AgentSettings struct {
@@ -75,6 +80,11 @@ func normalizeApplication(app *Application) {
 	if app.ResetAfterSeconds <= 0 { app.ResetAfterSeconds = 300 }
 	if app.StartupDelaySeconds <= 0 { app.StartupDelaySeconds = 60 }
 	if app.WorkingDirectory == "" && app.Path != "" { app.WorkingDirectory = filepath.Dir(app.Path) }
+	switch app.RunAs = strings.ToLower(strings.TrimSpace(app.RunAs)); app.RunAs {
+	case "auto", "user", "service":
+	default:
+		app.RunAs = "auto"
+	}
 }
 
 func NormalizeSettings(s *AgentSettings) {

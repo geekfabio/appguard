@@ -2,6 +2,7 @@ package watchdog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -27,8 +28,18 @@ type Watchdog struct {
 	pending        map[string]bool
 	startedAt       time.Time
 	startupHandled  map[string]bool
+	// busy marks applications with a start/stop in flight outside the lock.
+	busy            map[string]bool
+	// generation changes on every settings update; restarts scheduled for an
+	// older generation are dropped.
+	generation      uint64
 	events          chan Event
 }
+
+const (
+	startVerifyWindow = 3 * time.Second
+	stopTimeout       = 10 * time.Second
+)
 
 func New(cfg *config.Config, configPath string) *Watchdog {
 	return &Watchdog{
@@ -39,6 +50,7 @@ func New(cfg *config.Config, configPath string) *Watchdog {
 		pending: make(map[string]bool),
 		startedAt: time.Now(),
 		startupHandled: make(map[string]bool),
+		busy: make(map[string]bool),
 		events: make(chan Event, 128),
 	}
 }
@@ -73,6 +85,7 @@ func (w *Watchdog) ApplySettings(settings config.AgentSettings) error {
 	w.pending = make(map[string]bool)
 	w.startedAt = time.Now()
 	w.startupHandled = make(map[string]bool)
+	w.generation++
 
 	if err := config.Save(w.configPath, w.cfg); err != nil {
 		return err
@@ -117,17 +130,18 @@ func (w *Watchdog) Run(ctx context.Context) error {
 }
 
 func (w *Watchdog) checkAll() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	var initial []config.Application
 
+	w.mu.Lock()
 	if !w.cfg.Enabled {
+		w.mu.Unlock()
 		return
 	}
 
 	now := time.Now()
 
 	for _, app := range w.cfg.Apps {
-		if !app.Enabled {
+		if !app.Enabled || w.busy[app.Name] {
 			continue
 		}
 
@@ -148,14 +162,8 @@ func (w *Watchdog) checkAll() {
 
 			w.startupHandled[app.Name] = true
 			if !running {
-				if err := proc.Start(app.Path, app.WorkingDirectory); err != nil {
-					slog.Error("initial application start failed", "app", app.Name, "error", err)
-					w.emit("startup-failed", app.Name, err.Error())
-				} else {
-					slog.Info("application started after startup delay", "app", app.Name, "delay", delay)
-					w.stableSince[app.Name] = time.Now()
-					w.emit("startup-success", app.Name, fmt.Sprintf("iniciada após %s", delay))
-				}
+				w.busy[app.Name] = true
+				initial = append(initial, app)
 				continue
 			}
 		}
@@ -195,31 +203,101 @@ func (w *Watchdog) checkAll() {
 		w.emit("process-crash", app.Name, "processo não encontrado")
 		w.emit("retry-scheduled", app.Name, fmt.Sprintf("tentativa %d em %s", attempt, delay))
 
-		appCopy := app
-		go w.restartAfterDelay(appCopy, attempt, delay)
+		go w.restartAfterDelay(app.Name, attempt, delay, w.generation)
+	}
+	w.mu.Unlock()
+
+	for _, app := range initial {
+		go w.initialStart(app)
 	}
 }
 
-func (w *Watchdog) restartAfterDelay(app config.Application, attempt int, delay time.Duration) {
-	time.Sleep(delay)
-
-	err := proc.Start(app.Path, app.WorkingDirectory)
+func (w *Watchdog) initialStart(app config.Application) {
+	delay := time.Duration(app.StartupDelaySeconds) * time.Second
+	pid, err := startApp(app)
 
 	w.mu.Lock()
-	w.pending[app.Name] = false
+	delete(w.busy, app.Name)
 	if err == nil {
 		w.stableSince[app.Name] = time.Now()
 	}
 	w.mu.Unlock()
 
 	if err != nil {
-		slog.Error("application restart failed", "app", app.Name, "retry", attempt, "error", err)
-		w.emit("restart-failed", app.Name, fmt.Sprintf("tentativa %d: %v", attempt, err))
+		slog.Error("initial application start failed", "app", app.Name, "error", err)
+		w.emit("startup-failed", app.Name, err.Error())
 		return
 	}
+	slog.Info("application started after startup delay", "app", app.Name, "delay", delay, "pid", pid)
+	w.emit("startup-success", app.Name, fmt.Sprintf("iniciada após %s (PID %d)", delay, pid))
+}
 
-	slog.Info("application restarted", "app", app.Name, "retry", attempt)
-	w.emit("restart-success", app.Name, fmt.Sprintf("tentativa %d concluída", attempt))
+// restartAfterDelay re-reads the application after the delay so a restart
+// scheduled before a settings change, a disable or a manual start is dropped.
+func (w *Watchdog) restartAfterDelay(name string, attempt int, delay time.Duration, gen uint64) {
+	time.Sleep(delay)
+
+	w.mu.Lock()
+	if gen != w.generation {
+		w.mu.Unlock()
+		return
+	}
+	app, ok := w.findApp(name)
+	if !ok || !app.Enabled || !w.cfg.Enabled || w.busy[name] {
+		w.pending[name] = false
+		w.mu.Unlock()
+		return
+	}
+	w.busy[name] = true
+	w.mu.Unlock()
+
+	var err error
+	var pid uint32
+	running, _, _ := proc.IsRunning(app.Path)
+	if !running {
+		pid, err = startApp(app)
+	}
+
+	w.mu.Lock()
+	delete(w.busy, name)
+	if gen == w.generation {
+		w.pending[name] = false
+		if err == nil {
+			w.stableSince[name] = time.Now()
+		}
+	}
+	w.mu.Unlock()
+
+	switch {
+	case running:
+		w.emit("restart-skipped", name, "aplicação já se encontra em execução")
+	case err != nil:
+		slog.Error("application restart failed", "app", name, "retry", attempt, "error", err)
+		w.emit("restart-failed", name, fmt.Sprintf("tentativa %d: %v", attempt, err))
+	default:
+		slog.Info("application restarted", "app", name, "retry", attempt, "pid", pid)
+		w.emit("restart-success", name, fmt.Sprintf("tentativa %d concluída (PID %d)", attempt, pid))
+	}
+}
+
+func (w *Watchdog) findApp(name string) (config.Application, bool) {
+	for _, app := range w.cfg.Apps {
+		if app.Name == name {
+			return app, true
+		}
+	}
+	return config.Application{}, false
+}
+
+func startApp(app config.Application) (uint32, error) {
+	return proc.Start(proc.StartOptions{
+		Path:      app.Path,
+		Dir:       app.WorkingDirectory,
+		Args:      app.Arguments,
+		Env:       app.Environment,
+		RunAs:     app.RunAs,
+		VerifyFor: startVerifyWindow,
+	})
 }
 
 func retryDelay(attempt int) time.Duration {
@@ -247,6 +325,8 @@ func (w *Watchdog) Status() map[string]any {
 			"enabled": app.Enabled,
 			"running": running,
 			"restartPending": w.pending[app.Name],
+			"operationPending": w.busy[app.Name],
+			"runAs": app.RunAs,
 			"pids": ids,
 			"retries": w.retries[app.Name],
 			"maxRetries": app.MaxRetries,
@@ -263,10 +343,20 @@ func (w *Watchdog) Status() map[string]any {
 	}
 }
 
+type operation struct {
+	app           config.Application
+	stop          bool
+	start         bool
+	skipIfRunning bool
+}
+
+// Apply executes a remote command. Configuration flags are changed under the
+// lock; stopping and starting processes happens outside it so heartbeats and
+// the supervision loop are not blocked while processes start or exit.
 func (w *Watchdog) Apply(action, appName string) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
+	var ops []operation
 	switch action {
 	case "disable-all":
 		w.cfg.Enabled = false
@@ -274,25 +364,17 @@ func (w *Watchdog) Apply(action, appName string) error {
 		w.cfg.Enabled = true
 	case "stop-all":
 		for _, app := range w.cfg.Apps {
-			_ = proc.Stop(app.Path)
-			w.pending[app.Name] = false
+			ops = append(ops, operation{app: app, stop: true})
 		}
-	case "restart-all":
+	case "start-all", "restart-all":
 		for _, app := range w.cfg.Apps {
 			if !app.Enabled {
 				continue
 			}
-			_ = proc.Stop(app.Path)
-			if err := proc.Start(app.Path, app.WorkingDirectory); err != nil {
-				slog.Error("restart failed", "app", app.Name, "error", err)
-				w.emit("restart-failed", app.Name, err.Error())
-			} else {
-				w.pending[app.Name] = false
-				w.stableSince[app.Name] = time.Now()
-				w.emit("restart-success", app.Name, "reinício remoto concluído")
-			}
+			restart := action == "restart-all"
+			ops = append(ops, operation{app: app, stop: restart, start: true, skipIfRunning: !restart})
 		}
-	case "disable-app", "enable-app", "stop-app", "restart-app":
+	case "disable-app", "enable-app", "stop-app", "start-app", "restart-app":
 		idx := -1
 		for i := range w.cfg.Apps {
 			if w.cfg.Apps[i].Name == appName {
@@ -301,6 +383,7 @@ func (w *Watchdog) Apply(action, appName string) error {
 			}
 		}
 		if idx < 0 {
+			w.mu.Unlock()
 			return fmt.Errorf("unknown application %q", appName)
 		}
 
@@ -312,19 +395,103 @@ func (w *Watchdog) Apply(action, appName string) error {
 			app.Enabled = true
 		case "stop-app":
 			app.Enabled = false
-			w.pending[app.Name] = false
-			_ = proc.Stop(app.Path)
+			ops = append(ops, operation{app: *app, stop: true})
+		case "start-app":
+			ops = append(ops, operation{app: *app, start: true, skipIfRunning: true})
 		case "restart-app":
-			_ = proc.Stop(app.Path)
-			if err := proc.Start(app.Path, app.WorkingDirectory); err != nil {
-				return err
-			}
-			w.pending[app.Name] = false
-			w.stableSince[app.Name] = time.Now()
+			ops = append(ops, operation{app: *app, stop: true, start: true})
 		}
 	default:
+		w.mu.Unlock()
 		return fmt.Errorf("unknown action %q", action)
 	}
 
-	return config.Save(w.configPath, w.cfg)
+	var errs []error
+	runnable := ops[:0]
+	for _, op := range ops {
+		name := op.app.Name
+		if w.busy[name] {
+			errs = append(errs, fmt.Errorf("%s: já existe uma operação em curso", name))
+			continue
+		}
+		w.busy[name] = true
+		w.pending[name] = false
+		if op.start {
+			w.retries[name] = 0
+		}
+		runnable = append(runnable, op)
+	}
+
+	errs = append(errs, config.Save(w.configPath, w.cfg))
+	w.mu.Unlock()
+
+	var wg sync.WaitGroup
+	results := make([]error, len(runnable))
+	for i, op := range runnable {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = w.runOperation(op)
+		}()
+	}
+	wg.Wait()
+
+	return errors.Join(append(errs, results...)...)
+}
+
+func (w *Watchdog) runOperation(op operation) error {
+	name := op.app.Name
+	err := w.execOperation(op)
+
+	w.mu.Lock()
+	delete(w.busy, name)
+	if op.start && err == nil {
+		w.stableSince[name] = time.Now()
+	}
+	w.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
+}
+
+func (w *Watchdog) execOperation(op operation) error {
+	name := op.app.Name
+	failed, succeeded := "stop-failed", "stopped"
+	if op.start {
+		failed, succeeded = "start-failed", "start-success"
+		if op.stop {
+			failed, succeeded = "restart-failed", "restart-success"
+		}
+	}
+
+	if op.stop {
+		if err := proc.Stop(op.app.Path, stopTimeout); err != nil {
+			slog.Error("stop failed", "app", name, "error", err)
+			w.emit(failed, name, "não foi possível parar: "+err.Error())
+			return err
+		}
+	}
+	if !op.start {
+		w.emit(succeeded, name, "paragem remota concluída")
+		return nil
+	}
+
+	if op.skipIfRunning {
+		if running, _, _ := proc.IsRunning(op.app.Path); running {
+			w.emit("start-skipped", name, "aplicação já se encontra em execução")
+			return nil
+		}
+	}
+
+	pid, err := startApp(op.app)
+	if err != nil {
+		slog.Error("remote start failed", "app", name, "error", err)
+		w.emit(failed, name, err.Error())
+		return err
+	}
+	slog.Info("application started remotely", "app", name, "pid", pid)
+	w.emit(succeeded, name, fmt.Sprintf("arranque remoto concluído (PID %d)", pid))
+	return nil
 }

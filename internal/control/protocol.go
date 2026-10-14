@@ -29,6 +29,17 @@ type Command struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+const (
+	CommandOK     = "ok"
+	CommandFailed = "failed"
+)
+
+// CommandResult is sent by the agent when acknowledging a command.
+type CommandResult struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
 type Event struct {
 	Time    time.Time `json:"time"`
 	AgentID string    `json:"agentId,omitempty"`

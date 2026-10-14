@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -247,10 +248,40 @@ func RunController(cfg *config.Config) error {
 			http.Error(w, "missing command id", http.StatusBadRequest)
 			return
 		}
-		if err := st.db.AckCommand(commandID); err != nil {
+		// Agents older than this release send no body: treat as success.
+		result := CommandResult{Status: CommandOK}
+		if r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&result); err != nil && err != io.EOF {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		if result.Status != CommandFailed {
+			result.Status = CommandOK
+		}
+
+		cmd, err := st.db.AckCommand(commandID, result.Status, result.Error)
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		event := Event{
+			Time: time.Now(), AgentID: cmd.AgentID, AppName: cmd.AppName,
+			Action: "command-completed", Detail: cmd.Action + ": concluído",
+		}
+		if a, err := st.db.GetAgent(cmd.AgentID); err == nil {
+			event.Group = a.Group
+		}
+		if result.Status == CommandFailed {
+			event.Action = "remote-command-failed"
+			event.Detail = cmd.Action + ": " + result.Error
+		}
+		st.addEvent(event)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -574,7 +605,7 @@ func (s *controllerState) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func validAction(a string) bool {
 	switch a {
-	case "disable-all", "enable-all", "stop-all", "restart-all":
+	case "disable-all", "enable-all", "stop-all", "start-all", "restart-all":
 		return true
 	default:
 		return false
@@ -583,7 +614,7 @@ func validAction(a string) bool {
 
 func validAppAction(a string) bool {
 	switch a {
-	case "disable-app", "enable-app", "stop-app", "restart-app":
+	case "disable-app", "enable-app", "stop-app", "start-app", "restart-app":
 		return true
 	default:
 		return false
@@ -635,6 +666,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </div>
 <div class="toolbar">
 <button class="btn good" onclick="broadcast('enable-all')">Activar todos</button>
+<button class="btn good" onclick="broadcast('start-all')">Abrir todos</button>
 <button class="btn" onclick="broadcast('restart-all')">Reiniciar todos</button>
 <button class="btn warn" onclick="broadcast('stop-all')">Parar todos</button>
 <button class="btn warn" onclick="broadcast('disable-all')">Desactivar watchdog</button>
@@ -664,7 +696,7 @@ document.getElementById('online').textContent=agents.filter(a=>a.online).length;
 document.getElementById('offline').textContent=agents.filter(a=>!a.online).length;
 let running=0,retries=0;for(const a of agents){for(const p of (a.status?.apps||[])){if(p.running)running++;retries+=Number(p.retries||0)}}
 document.getElementById('running').textContent=running;
-document.getElementById('failures').textContent=events.filter(e=>['process-crash','restart-failed','retry-limit-reached'].includes(e.action)).length;
+document.getElementById('failures').textContent=events.filter(e=>['process-crash','restart-failed','start-failed','startup-failed','retry-limit-reached','remote-command-failed'].includes(e.action)).length;
 cachedAgents=agents;
 const groups=[...new Set(agents.map(a=>a.group))].sort();
 const gf=document.getElementById('groupFilter'), oldGroup=gf.value;
@@ -694,7 +726,7 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 async function command(action){await api('/api/v1/admin/agent/'+encodeURIComponent(id)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function commandApp(name,action){await api('/api/v1/admin/agent-app/'+encodeURIComponent(id)+'/'+encodeURIComponent(name)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function saveSettings(){let body;try{body=JSON.parse(document.getElementById('settings').value)}catch(e){alert('JSON inválido');return}await api('/api/v1/admin/agent-settings/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});alert('Configuração enviada para o agente')}
-async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good node-action" data-action="enable-all">Activar</button> <button class="btn node-action" data-action="restart-all">Reiniciar</button> <button class="btn warn node-action" data-action="stop-all">Parar</button> <button class="btn warn node-action" data-action="disable-all">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="enable-app">Activar</button> <button class="btn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="restart-app">Reiniciar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="stop-app">Parar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="disable-app">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
+async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good node-action" data-action="enable-all">Activar</button> <button class="btn good node-action" data-action="start-all">Abrir</button> <button class="btn node-action" data-action="restart-all">Reiniciar</button> <button class="btn warn node-action" data-action="stop-all">Parar</button> <button class="btn warn node-action" data-action="disable-all">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.operationPending?'A executar comando':(p.restartPending?'Retry pendente':'Stopped')))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="start-app">Abrir</button> <button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="enable-app">Activar</button> <button class="btn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="restart-app">Reiniciar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="stop-app">Parar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="disable-app">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
 document.addEventListener('click',e=>{const n=e.target.closest('.node-action');if(n){command(n.dataset.action);return}const a=e.target.closest('.app-action');if(a){commandApp(decodeURIComponent(a.dataset.app),a.dataset.action)}});
 refresh();setInterval(refresh,5000);
 </script></body></html>`

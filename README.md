@@ -102,14 +102,15 @@ GET /api/v1/commands/{agentId}
         ↓
 Agente executa
         ↓
-POST /api/v1/commands/ack/{commandId}
+POST /api/v1/commands/ack/{commandId}   {"status":"ok"|"failed","error":"..."}
         ↓
-Controller marca como entregue
+Controller marca como entregue, guarda o resultado e regista o evento
+(command-completed / remote-command-failed)
 ```
 
 Isto evita que uma ordem desapareça apenas porque o computador estava desligado ou temporariamente sem rede.
 
-A entrega segue uma estratégia **at-least-once**: se o agente executar um comando mas o ACK falhar por problema de rede, o comando pode voltar a ser recebido. Por isso, as operações do AppGuard devem continuar a ser tratadas de forma idempotente sempre que possível.
+A entrega segue uma estratégia **at-least-once**: se o agente executar um comando mas o ACK falhar por problema de rede, o comando pode voltar a ser recebido. Para evitar execuções duplicadas, o agente memoriza o resultado dos últimos 200 comandos: se receber de novo um comando já executado, limita-se a repetir o ACK.
 
 ## Enrollment
 
@@ -205,6 +206,32 @@ Exemplo:
 
 A configuração remota também utiliza a fila de comandos persistentes.
 
+## Abertura de aplicações
+
+Campos opcionais por aplicação:
+
+```json
+{
+  "arguments": ["--modo", "loja"],
+  "environment": { "APP_ENV": "producao" },
+  "runAs": "auto"
+}
+```
+
+`runAs` define em que sessão do Windows a aplicação é aberta:
+
+| Valor | Comportamento |
+|---|---|
+| `auto` (padrão) | Abre no ambiente de trabalho do utilizador com sessão activa; sem utilizador ligado, arranca escondida na sessão 0. |
+| `user` | Abre sempre no ambiente de trabalho do utilizador (necessário para aplicações com janela quando o AppGuard corre como serviço). Falha se ninguém tiver sessão iniciada. |
+| `service` | Arranca escondida na sessão 0, com a conta do serviço (processos sem interface). |
+
+Antes de abrir, o AppGuard confirma que o executável e a pasta de trabalho existem. Depois de abrir, só reporta sucesso se o processo continuar vivo ao fim de 3 segundos; caso contrário reporta a falha com o código de saída.
+
+Acções por aplicação: `start-app` (abre já, sem esperar pelo watchdog, e repõe o contador de retries), `restart-app`, `stop-app`, `enable-app`, `disable-app`. Acções por agente: `start-all`, `restart-all`, `stop-all`, `enable-all`, `disable-all`.
+
+`restart` termina o processo, espera até 10 segundos que ele saia e só depois abre a nova instância.
+
 ## Segurança
 
 The token requirement has been removed in v1.1.1.
@@ -241,7 +268,7 @@ O mesmo comportamento aplica-se aos processos locais do computador controlador.
 5s → 10s → 30s → 60s → 120s
 ```
 
-O estado `restartPending` impede múltiplos restarts concorrentes.
+O estado `restartPending` impede múltiplos restarts concorrentes. Antes de executar um restart agendado, o AppGuard confirma que a aplicação continua activa na configuração e que não foi aberta entretanto.
 
 ## Compilar
 

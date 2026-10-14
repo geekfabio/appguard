@@ -74,7 +74,36 @@ CREATE TABLE IF NOT EXISTS commands (
 CREATE INDEX IF NOT EXISTS idx_commands_pending
 ON commands(agent_id, delivered_at, created_at);
 `
-	_, err := d.sql.Exec(schema)
+	if _, err := d.sql.Exec(schema); err != nil {
+		return err
+	}
+	for _, column := range []string{"result_status", "result_error"} {
+		if err := d.addColumnIfMissing("commands", column, "TEXT"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DB) addColumnIfMissing(table, column, kind string) error {
+	rows, err := d.sql.Query("SELECT name FROM pragma_table_info(?)", table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = d.sql.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, kind))
 	return err
 }
 
@@ -192,13 +221,35 @@ LIMIT ?
 	return commands, rows.Err()
 }
 
-func (d *DB) AckCommand(commandID string) error {
-	_, err := d.sql.Exec(
-		"UPDATE commands SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+// AckCommand marks the command as delivered and stores the agent's result.
+// It returns the command, or sql.ErrNoRows when it was already acknowledged
+// (an agent re-acking after a lost response) or does not exist.
+func (d *DB) AckCommand(commandID, status, errMsg string) (*Command, error) {
+	res, err := d.sql.Exec(`
+UPDATE commands SET delivered_at = ?, result_status = ?, result_error = ?
+WHERE id = ? AND delivered_at IS NULL
+`,
 		time.Now().UTC().Format(time.RFC3339Nano),
+		status,
+		errMsg,
 		commandID,
 	)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, sql.ErrNoRows
+	}
+
+	var command Command
+	err = d.sql.QueryRow(
+		"SELECT id, agent_id, action, COALESCE(app_name, '') FROM commands WHERE id = ?",
+		commandID,
+	).Scan(&command.ID, &command.AgentID, &command.Action, &command.AppName)
+	if err != nil {
+		return nil, err
+	}
+	return &command, nil
 }
 
 func (d *DB) PendingCommandCount(agentID string) (int, error) {
