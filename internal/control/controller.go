@@ -25,11 +25,11 @@ type controllerState struct {
 }
 
 type agentView struct {
-	AgentID   string         \`json:"agentId"\`
-	Group     string         \`json:"group"\`
-	LastSeen  time.Time      \`json:"lastSeen"\`
-	Online    bool           \`json:"online"\`
-	Status    map[string]any \`json:"status"\`
+	AgentID   string         `json:"agentId"`
+	Group     string         `json:"group"`
+	LastSeen  time.Time      `json:"lastSeen"`
+	Online    bool           `json:"online"`
+	Status    map[string]any `json:"status"`
 }
 
 func RunController(cfg *config.Config) error {
@@ -265,7 +265,7 @@ func writeJSON(w http.ResponseWriter, value any) {
 
 var _ = template.HTMLEscapeString
 
-const dashboardHTML = \`<!doctype html>
+const dashboardHTML = `<!doctype html>
 <html lang="pt">
 <head>
 <meta charset="utf-8">
@@ -339,4 +339,4 @@ document.getElementById('events').innerHTML=events.slice(0,100).map(e=>'<div cla
 refresh();setInterval(refresh,5000);
 </script>
 </body>
-</html>\`
+</html>`

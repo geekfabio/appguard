@@ -9,29 +9,29 @@ import (
 )
 
 type Config struct {
-	AgentID    string        \`json:"agentId"\`
-	Group      string        \`json:"group"\`
-	Enabled    bool          \`json:"enabled"\`
-	CheckEvery int           \`json:"checkEverySeconds"\`
-	Controller Controller    \`json:"controller"\`
-	Apps       []Application \`json:"applications"\`
+	AgentID    string        `json:"agentId"`
+	Group      string        `json:"group"`
+	Enabled    bool          `json:"enabled"`
+	CheckEvery int           `json:"checkEverySeconds"`
+	Controller Controller    `json:"controller"`
+	Apps       []Application `json:"applications"`
 }
 
 type Controller struct {
-	URL              string \`json:"url"\`
-	Token            string \`json:"token"\`
-	PollEverySeconds int    \`json:"pollEverySeconds"\`
-	Listen           string \`json:"listen"\`
+	URL              string `json:"url"`
+	Token            string `json:"token"`
+	PollEverySeconds int    `json:"pollEverySeconds"`
+	Listen           string `json:"listen"`
 }
 
 type Application struct {
-	Name              string \`json:"name"\`
-	Path              string \`json:"path"\`
-	WorkingDirectory  string \`json:"workingDirectory"\`
-	Enabled           bool   \`json:"enabled"\`
-	AutoRestart       bool   \`json:"autoRestart"\`
-	MaxRetries        int    \`json:"maxRetries"\`
-	ResetAfterSeconds int    \`json:"resetAfterSeconds"\`
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	WorkingDirectory  string `json:"workingDirectory"`
+	Enabled           bool   `json:"enabled"`
+	AutoRestart       bool   `json:"autoRestart"`
+	MaxRetries        int    `json:"maxRetries"`
+	ResetAfterSeconds int    `json:"resetAfterSeconds"`
 }
 
 var mu sync.Mutex
