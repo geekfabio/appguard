@@ -80,7 +80,8 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(dashboardHTML))
+		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", "v"+buildinfo.Version)
+		_, _ = w.Write([]byte(page))
 	})
 
 	mux.HandleFunc("/agent/", func(w http.ResponseWriter, r *http.Request) {
@@ -622,7 +623,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><h1>AppGuard Control Center <span class="muted">v1.0.0</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
+<header><h1>AppGuard Control Center <span class="muted">{{VERSION}}</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
 <div class="cards">
@@ -673,7 +674,6 @@ renderAgents();
 document.getElementById('events').innerHTML=events.slice(0,120).map(e=>'<div class="event"><strong>'+esc(e.action)+'</strong> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.agentId||e.group||'global')+' — '+esc(e.detail||'')+'</div>').join('');
 }catch(e){console.error(e)}}
 document.addEventListener('click',e=>{const b=e.target.closest('.agent-action');if(!b)return;commandAgent(decodeURIComponent(b.dataset.agent),b.dataset.action)});
-document.addEventListener('click',e=>{const n=e.target.closest('.node-action');if(n){command(n.dataset.action);return}const a=e.target.closest('.app-action');if(a){commandApp(decodeURIComponent(a.dataset.app),a.dataset.action)}});
 refresh();setInterval(refresh,5000);
 </script></body></html>`
 
@@ -695,5 +695,6 @@ async function command(action){await api('/api/v1/admin/agent/'+encodeURICompone
 async function commandApp(name,action){await api('/api/v1/admin/agent-app/'+encodeURIComponent(id)+'/'+encodeURIComponent(name)+'/'+action,{method:'POST'});setTimeout(refresh,500)}
 async function saveSettings(){let body;try{body=JSON.parse(document.getElementById('settings').value)}catch(e){alert('JSON inválido');return}await api('/api/v1/admin/agent-settings/'+encodeURIComponent(id),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});alert('Configuração enviada para o agente')}
 async function refresh(){try{const d=await api('/api/v1/admin/agent-detail/'+encodeURIComponent(id));const a=d.agent;document.getElementById('summary').innerHTML='<b>'+esc(a.agentId)+'</b> · '+esc(a.group)+' · '+(a.online?'Online':'Offline')+' · último contacto '+new Date(a.lastSeen).toLocaleString()+'<br><br><button class="btn good node-action" data-action="enable-all">Activar</button> <button class="btn node-action" data-action="restart-all">Reiniciar</button> <button class="btn warn node-action" data-action="stop-all">Parar</button> <button class="btn warn node-action" data-action="disable-all">Desactivar</button>';document.getElementById('apps').innerHTML=(a.status?.apps||[]).map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+(p.running?'Running':(p.restartPending?'Retry pendente':'Stopped'))+'</td><td>'+Number(p.retries||0)+' / '+Number(p.maxRetries||0)+'</td><td>'+esc((p.pids||[]).join(', '))+'</td><td><button class="btn good app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="enable-app">Activar</button> <button class="btn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="restart-app">Reiniciar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="stop-app">Parar</button> <button class="btn warn app-action" data-app="'+encodeURIComponent(p.name)+'" data-action="disable-app">Desactivar</button></td></tr>').join('');const ta=document.getElementById('settings');if(ta&&!ta.matches(':focus'))ta.value=JSON.stringify(a.status?.settings||{},null,2);document.getElementById('events').innerHTML=d.events.map(e=>'<p><b>'+esc(e.action)+'</b> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.detail||'')+'</p>').join('')}catch(e){document.getElementById('summary').textContent=e.message}}
+document.addEventListener('click',e=>{const n=e.target.closest('.node-action');if(n){command(n.dataset.action);return}const a=e.target.closest('.app-action');if(a){commandApp(decodeURIComponent(a.dataset.app),a.dataset.action)}});
 refresh();setInterval(refresh,5000);
 </script></body></html>`
