@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	AgentID    string        `json:"agentId"`
+	Role       string        `json:"role"`
 	Group      string        `json:"group"`
 	Enabled    bool          `json:"enabled"`
 	CheckEvery int           `json:"checkEverySeconds"`
@@ -54,6 +55,8 @@ func Load(path string) (*Config, error) {
 
 func applyDefaults(cfg *Config) {
 	if cfg.AgentID == "" { host, _ := os.Hostname(); cfg.AgentID = host }
+	if cfg.Role == "" { cfg.Role = "agent" }
+	if cfg.Role != "agent" && cfg.Role != "controller" { cfg.Role = "agent" }
 	if cfg.Group == "" { cfg.Group = "default" }
 	if cfg.CheckEvery <= 0 { cfg.CheckEvery = 10 }
 	if cfg.Controller.PollEverySeconds <= 0 { cfg.Controller.PollEverySeconds = 5 }
