@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"appguard/internal/buildinfo"
 	"appguard/internal/config"
@@ -171,7 +173,27 @@ func runControllerNode(ctx context.Context, configPath string) error {
 	go func() {
 		errCh <- control.RunController(cfg)
 	}()
-	go control.RunAgentClient(ctx, cfg, w)
+
+	go func() {
+		client := &http.Client{Timeout: 1 * time.Second}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			resp, err := client.Get(strings.TrimRight(cfg.Controller.URL, "/") + "/healthz")
+			if err == nil && resp.StatusCode == http.StatusOK {
+				_ = resp.Body.Close()
+				control.RunAgentClient(ctx, cfg, w)
+				return
+			}
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}()
 
 	go func() {
 		errCh <- w.Run(ctx)
