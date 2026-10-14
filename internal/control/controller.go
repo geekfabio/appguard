@@ -24,6 +24,7 @@ type controllerState struct {
 	db      *storage.DB
 	events  []Event
 	release *agentRelease
+	guard   *authGuard
 }
 
 type agentView struct {
@@ -46,6 +47,7 @@ func RunController(cfg *config.Config) error {
 	st := &controllerState{
 		db: db,
 		release: newAgentRelease(cfg.Controller.AgentUpdates),
+		guard: newAuthGuard(cfg.Controller.Auth),
 	}
 
 	if cfg.Role == "controller" {
@@ -79,7 +81,10 @@ func RunController(cfg *config.Config) error {
 		})
 	})
 
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/login", st.guard.handleLogin)
+	mux.HandleFunc("/logout", st.guard.handleLogout)
+
+	mux.HandleFunc("/", st.guard.protectPage(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
@@ -87,9 +92,9 @@ func RunController(cfg *config.Config) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page := strings.ReplaceAll(dashboardHTML, "{{VERSION}}", "v"+buildinfo.Version)
 		_, _ = w.Write([]byte(page))
-	})
+	}))
 
-	mux.HandleFunc("/agent/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/agent/", st.guard.protectPage(func(w http.ResponseWriter, r *http.Request) {
 		agentID := strings.TrimPrefix(r.URL.Path, "/agent/")
 		if agentID == "" {
 			http.NotFound(w, r)
@@ -98,7 +103,7 @@ func RunController(cfg *config.Config) error {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page := strings.ReplaceAll(agentHTML, "{{AGENT_ID}}", templateJS(agentID))
 		_, _ = w.Write([]byte(page))
-	})
+	}))
 
 	mux.HandleFunc("/api/v1/enroll", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -297,7 +302,7 @@ func RunController(cfg *config.Config) error {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	mux.HandleFunc("/api/v1/admin/agents", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/agents", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		agents, err := st.db.ListAgents()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -319,7 +324,7 @@ func RunController(cfg *config.Config) error {
 		writeJSON(w, result)
 	}))
 
-	mux.HandleFunc("/api/v1/admin/agent-detail/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/agent-detail/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		agentID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agent-detail/")
 		if agentID == "" {
 			http.Error(w, "missing agent id", http.StatusBadRequest)
@@ -351,12 +356,12 @@ func RunController(cfg *config.Config) error {
 		})
 	}))
 
-	mux.HandleFunc("/api/v1/admin/events", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/events", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		agentID := r.URL.Query().Get("agentId")
 		writeJSON(w, st.listEvents(agentID, 300))
 	}))
 
-	mux.HandleFunc("/api/v1/admin/broadcast/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/broadcast/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -385,7 +390,7 @@ func RunController(cfg *config.Config) error {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 
-	mux.HandleFunc("/api/v1/admin/agent/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/agent/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -421,7 +426,7 @@ func RunController(cfg *config.Config) error {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 
-	mux.HandleFunc("/api/v1/admin/group/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/group/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -459,7 +464,7 @@ func RunController(cfg *config.Config) error {
 		writeJSON(w, map[string]any{"accepted": count})
 	}))
 
-	mux.HandleFunc("/api/v1/admin/agent-app/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/agent-app/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -506,7 +511,7 @@ func RunController(cfg *config.Config) error {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 
-	mux.HandleFunc("/api/v1/admin/agent-settings/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/admin/agent-settings/", st.admin(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -613,8 +618,14 @@ func (s *controllerState) enqueueLocked(agentID, action, appName string) {
 	})
 }
 
+// auth leaves agent-facing endpoints open (agents hold no credentials).
 func (s *controllerState) auth(next http.HandlerFunc) http.HandlerFunc {
 	return next
+}
+
+// admin protects an endpoint used only by the dashboard operator.
+func (s *controllerState) admin(next http.HandlerFunc) http.HandlerFunc {
+	return s.guard.protectAPI(next)
 }
 
 func validAction(a string) bool {
@@ -668,7 +679,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><h1>AppGuard Control Center <span class="muted">{{VERSION}}</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
+<header><a href="/logout" class="btn" style="float:right">Sair</a><h1>AppGuard Control Center <span class="muted">{{VERSION}}</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
 <div class="cards">

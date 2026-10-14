@@ -274,17 +274,35 @@ Acções por aplicação: `start-app` (abre já, sem esperar pelo watchdog, e re
 
 ## Segurança
 
-The token requirement has been removed in v1.1.1.
+### Login do dashboard
 
-This means the Controller API is intentionally unauthenticated and should only be exposed on a trusted LAN. Restrict TCP port 8443 with Windows Firewall to the internal subnet and do not expose the Controller directly to the public Internet.
+O dashboard e a API de administração (`/api/v1/admin/*`) ficam protegidos por um login de operador. As credenciais vêm, por ordem de prioridade, das variáveis de ambiente ou do ficheiro de configuração do controlador:
 
-Recommended:
+```bash
+# .env / variáveis de ambiente do serviço (recomendado)
+APPGUARD_ADMIN_USER=admin
+APPGUARD_ADMIN_PASSWORD=uma-palavra-passe-forte
+```
 
-- keep Controller and Agents on the same trusted LAN/VLAN;
-- restrict inbound TCP 8443 to the relevant subnet;
-- avoid public port-forwarding;
-- use VPN or network-level access control for remote administration;
-- keep arbitrary shell execution disabled.
+```json
+"controller": {
+  "auth": { "username": "admin", "password": "uma-palavra-passe-forte" }
+}
+```
+
+Se definir ambos, o ambiente ganha. Depois do login é criado um cookie de sessão (`HttpOnly`, válido 12 horas); há um botão **Sair** no dashboard.
+
+As ligações dos **agentes** (heartbeat, comandos, eventos, enrolamento e actualização) continuam **sem autenticação**, para que os agentes não precisem de credenciais. Se deixar utilizador e palavra-passe vazios, o login fica desligado (comportamento anterior).
+
+> O tráfego é HTTP simples. Mantenha o controlador numa LAN de confiança, restrinja a porta 8443 com a Firewall do Windows à sub-rede interna e não exponha o controlador diretamente à Internet. Para acesso remoto use VPN.
+
+Recomendado:
+
+- defina `APPGUARD_ADMIN_USER` / `APPGUARD_ADMIN_PASSWORD`;
+- mantenha Controller e Agents na mesma LAN/VLAN de confiança;
+- restrinja o acesso de entrada à porta 8443 à sub-rede relevante;
+- evite redireccionamento de portas público;
+- use VPN ou controlo de acesso de rede para administração remota.
 
 ## Atraso inicial por aplicação
 

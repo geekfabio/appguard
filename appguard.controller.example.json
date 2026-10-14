@@ -12,6 +12,10 @@
     "agentUpdates": {
       "enabled": true,
       "maxConcurrent": 5
+    },
+    "auth": {
+      "username": "admin",
+      "password": "troque-esta-palavra-passe"
     }
   },
   "applications": [

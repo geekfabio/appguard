@@ -25,6 +25,16 @@ type Controller struct {
 	Listen           string `json:"listen"`
 	DatabasePath     string `json:"databasePath"`
 	AgentUpdates     AgentUpdates `json:"agentUpdates"`
+	Auth             Auth         `json:"auth"`
+}
+
+// Auth protects the dashboard and admin API with a single operator login.
+// Credentials come from the environment (APPGUARD_ADMIN_USER /
+// APPGUARD_ADMIN_PASSWORD) when set, otherwise from these fields. Leaving
+// both empty disables the login (useful on an already-isolated LAN).
+type Auth struct {
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // AgentUpdates controls how the controller distributes its own binary to
