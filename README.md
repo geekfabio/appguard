@@ -1,6 +1,6 @@
 # AppGuard
 
-> **Versão actual: v1.0.0**
+> **Versão actual: v1.0.1**
 
 AppGuard é um supervisor de processos Windows escrito em **Go**, com watchdog local, controlo centralizado pela LAN, dashboard web embutido e persistência SQLite.
 
@@ -179,6 +179,22 @@ Ainda não estão implementados:
 
 Por isso, o auto-update completo foi deliberadamente adiado até existir validação criptográfica da versão distribuída.
 
+## Atraso inicial por aplicação
+
+Cada aplicação pode esperar antes da primeira inicialização através de:
+
+```json
+{
+  "startupDelaySeconds": 60
+}
+```
+
+Se o campo não estiver presente, o valor padrão é **60 segundos**.
+
+Durante o atraso inicial o AppGuard não consome retries nem agenda reinícios. Ao terminar o período, se o processo não estiver a correr, ele é iniciado imediatamente. A partir daí, eventuais falhas utilizam a política normal de recuperação.
+
+O mesmo comportamento aplica-se aos processos locais do computador controlador.
+
 ## Política de recuperação
 
 ```text
@@ -301,5 +317,5 @@ A tabela `commands` armazena:
 ## Versão
 
 ```text
-AppGuard v1.0.0
+AppGuard v1.0.1
 ```
