@@ -20,9 +20,8 @@ import (
 const offlineAfter = 20 * time.Second
 
 type controllerState struct {
-	mu     sync.RWMutex
+	mu      sync.RWMutex
 	db      *storage.DB
-	events  []Event
 	release *agentRelease
 	guard   *authGuard
 }
@@ -35,6 +34,8 @@ type agentView struct {
 	Status    map[string]any `json:"status"`
 	// Update is the agent's version state against the controller binary.
 	Update    string         `json:"update,omitempty"`
+	// Pending is the number of commands queued but not yet delivered.
+	Pending   int            `json:"pending,omitempty"`
 }
 
 func RunController(cfg *config.Config) error {
@@ -317,6 +318,7 @@ func RunController(cfg *config.Config) error {
 		now := time.Now()
 		result := make([]agentView, 0, len(agents))
 		for _, a := range agents {
+			pending, _ := st.db.PendingCommandCount(a.AgentID)
 			result = append(result, agentView{
 				AgentID: a.AgentID,
 				Group: a.Group,
@@ -324,6 +326,7 @@ func RunController(cfg *config.Config) error {
 				Online: now.Sub(a.LastSeen) <= offlineAfter,
 				Status: a.Status,
 				Update: st.release.state(a.Status),
+				Pending: pending,
 			})
 		}
 		writeJSON(w, result)
@@ -361,9 +364,32 @@ func RunController(cfg *config.Config) error {
 		})
 	}))
 
-	mux.HandleFunc("/api/v1/admin/events", st.admin(func(w http.ResponseWriter, r *http.Request) {
-		agentID := r.URL.Query().Get("agentId")
-		writeJSON(w, st.listEvents(agentID, 300))
+	mux.HandleFunc("/api/v1/admin/events", st.admin(st.handleEvents))
+
+	mux.HandleFunc("/api/v1/admin/agent-remove/", st.admin(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		agentID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agent-remove/")
+		if agentID == "" {
+			http.Error(w, "missing agent id", http.StatusBadRequest)
+			return
+		}
+		removed, err := st.db.DeleteAgent(agentID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !removed {
+			http.Error(w, "unknown agent", http.StatusNotFound)
+			return
+		}
+		st.addEvent(Event{
+			Time: time.Now(), AgentID: agentID, Action: "agent-removed",
+			Detail: "Agente removido do controlador",
+		})
+		w.WriteHeader(http.StatusNoContent)
 	}))
 
 	mux.HandleFunc("/api/v1/admin/broadcast/", st.admin(func(w http.ResponseWriter, r *http.Request) {
@@ -570,6 +596,8 @@ func RunController(cfg *config.Config) error {
 	mux.HandleFunc("/api/v1/admin/powershell", st.admin(st.handlePowerShell))
 	mux.HandleFunc("/api/v1/admin/powershell/results", st.admin(st.handlePowerShellResults))
 
+	go st.pruneLoop()
+
 	slog.Info("AppGuard controller listening",
 		"addr", cfg.Controller.Listen,
 		"database", cfg.Controller.DatabasePath)
@@ -582,38 +610,59 @@ func RunController(cfg *config.Config) error {
 	return server.ListenAndServe()
 }
 
+// pruneLoop keeps stored logs small: events and delivered commands older
+// than two days are deleted on start and every six hours.
+func (s *controllerState) pruneLoop() {
+	prune := func() {
+		if n, err := s.db.PruneEvents(); err != nil {
+			slog.Error("prune events failed", "error", err)
+		} else if n > 0 {
+			slog.Debug("pruned old events", "count", n)
+		}
+		if n, err := s.db.PruneCommands(); err != nil {
+			slog.Error("prune commands failed", "error", err)
+		} else if n > 0 {
+			slog.Debug("pruned old commands", "count", n)
+		}
+	}
+	prune()
+	t := time.NewTicker(6 * time.Hour)
+	defer t.Stop()
+	for range t.C {
+		prune()
+	}
+}
+
 func (s *controllerState) addEvent(event Event) {
 	if event.Time.IsZero() {
 		event.Time = time.Now()
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.events = append([]Event{event}, s.events...)
-	if len(s.events) > 300 {
-		s.events = s.events[:300]
+	if err := s.db.AppendEvent(storage.EventRecord{
+		Time: event.Time, AgentID: event.AgentID, Group: event.Group,
+		Action: event.Action, AppName: event.AppName, Detail: event.Detail,
+	}); err != nil {
+		slog.Error("persist event failed", "action", event.Action, "error", err)
 	}
 }
 
 func (s *controllerState) listEvents(agentID string, limit int) []Event {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if limit <= 0 || limit > 300 {
-		limit = 300
+	records, err := s.db.ListEvents(storage.EventFilter{AgentID: agentID, Limit: limit})
+	if err != nil {
+		slog.Error("list events failed", "error", err)
+		return nil
 	}
+	return toEvents(records)
+}
 
-	result := make([]Event, 0, limit)
-	for _, event := range s.events {
-		if agentID != "" && event.AgentID != agentID {
-			continue
-		}
-		result = append(result, event)
-		if len(result) >= limit {
-			break
-		}
+func toEvents(records []storage.EventRecord) []Event {
+	out := make([]Event, 0, len(records))
+	for _, r := range records {
+		out = append(out, Event{
+			Time: r.Time, AgentID: r.AgentID, Group: r.Group,
+			Action: r.Action, AppName: r.AppName, Detail: r.Detail,
+		})
 	}
-	return result
+	return out
 }
 
 func (s *controllerState) enqueueLocked(agentID, action, appName string) {
@@ -705,9 +754,16 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 <button class="btn warn" onclick="broadcast('disable-all')">Desactivar watchdog</button>
 </div>
 <section class="panel"><h2>Agentes</h2>
-<table><thead><tr><th>Computador</th><th>Grupo</th><th>Versão</th><th>Estado</th><th>Processos</th><th>Retries</th><th>Último contacto</th><th>Acções</th></tr></thead><tbody id="agents"></tbody></table>
+<table><thead><tr><th>Computador</th><th>Grupo</th><th>Versão</th><th>Estado</th><th>Processos</th><th>Retries</th><th>Fila</th><th>Último contacto</th><th>Acções</th></tr></thead><tbody id="agents"></tbody></table>
 </section>
-<section class="panel"><h2>Eventos recentes (memória)</h2><div class="events" id="events"></div></section>
+<section class="panel"><h2>Eventos</h2>
+<div class="toolbar" style="padding:0 16px">
+<select id="evAction" onchange="renderEvents()"><option value="">Todas as acções</option></select>
+<select id="evHours" onchange="renderEvents()"><option value="">Qualquer altura</option><option value="1">Última hora</option><option value="24">Últimas 24h</option><option value="48">Últimos 2 dias</option></select>
+<a class="btn" id="csv" href="#" target="_blank">Exportar CSV</a>
+<span class="muted" style="align-self:center">Guardados 2 dias</span>
+</div>
+<div class="events" id="events"></div></section>
 </main>
 <script>
 let cachedAgents=[];
@@ -721,25 +777,40 @@ const q=(document.getElementById('search')?.value||'').toLowerCase();
 const group=document.getElementById('groupFilter')?.value||'';
 const state=document.getElementById('stateFilter')?.value||'';
 const agents=cachedAgents.filter(a=>(!q||(a.agentId+' '+a.group).toLowerCase().includes(q))&&(!group||a.group===group)&&(!state||(state==='online')===a.online));
-document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+updateBadge(a.update)+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="restart-all">Reiniciar</button> <button class="btn warn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="stop-all">Parar</button></td></tr>'}).join('');
+document.getElementById('agents').innerHTML=agents.map(a=>{const apps=a.status?.apps||[];const rc=apps.filter(p=>p.running).length;const rt=apps.reduce((n,p)=>n+Number(p.retries||0),0);const pend=Number(a.pending||0);return '<tr><td><a href="/agent/'+encodeURIComponent(a.agentId)+'"><strong>'+esc(a.agentId)+'</strong></a></td><td>'+esc(a.group)+'</td><td>'+esc(a.status?.version||'-')+updateBadge(a.update)+'</td><td><span class="badge '+(a.online?'online':'')+'"><span class="dot"></span>'+(a.online?'Online':'Offline')+'</span></td><td>'+rc+' / '+apps.length+'</td><td>'+rt+'</td><td>'+(pend?'<span class="muted">'+pend+' pend.</span>':'—')+'</td><td>'+new Date(a.lastSeen).toLocaleString()+'</td><td><button class="btn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="restart-all">Reiniciar</button> <button class="btn warn agent-action" data-agent="'+encodeURIComponent(a.agentId)+'" data-action="stop-all">Parar</button> <button class="btn warn agent-remove" data-agent="'+encodeURIComponent(a.agentId)+'">Remover</button></td></tr>'}).join('');
 }
+let cachedEvents=[];
+function renderEvents(){
+const action=document.getElementById('evAction').value;
+const hours=document.getElementById('evHours').value;
+const params=new URLSearchParams();if(action)params.set('action',action);if(hours)params.set('sinceHours',hours);
+document.getElementById('csv').href='/api/v1/admin/events?format=csv&'+params.toString();
+const list=cachedEvents.filter(e=>!action||e.action===action);
+document.getElementById('events').innerHTML=list.slice(0,200).map(e=>'<div class="event"><strong>'+esc(e.action)+'</strong> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.agentId||e.group||'global')+' — '+esc(e.detail||'')+'</div>').join('')||'<div class="event muted">Sem eventos.</div>';
+}
+async function removeAgent(id){if(!confirm('Remover o agente "'+id+'" do controlador? (não desinstala o serviço no PC)'))return;await api('/api/v1/admin/agent-remove/'+encodeURIComponent(id),{method:'POST'});setTimeout(refresh,300)}
 async function refresh(){try{
-const [agents,events]=await Promise.all([api('/api/v1/admin/agents'),api('/api/v1/admin/events')]);
+const hours=document.getElementById('evHours').value;
+const evURL='/api/v1/admin/events'+(hours?('?sinceHours='+hours):'');
+const [agents,events]=await Promise.all([api('/api/v1/admin/agents'),api(evURL)]);
 document.getElementById('total').textContent=agents.length;
 document.getElementById('online').textContent=agents.filter(a=>a.online).length;
 document.getElementById('offline').textContent=agents.filter(a=>!a.online).length;
 let running=0,retries=0;for(const a of agents){for(const p of (a.status?.apps||[])){if(p.running)running++;retries+=Number(p.retries||0)}}
 document.getElementById('running').textContent=running;
 document.getElementById('failures').textContent=events.filter(e=>['process-crash','restart-failed','start-failed','startup-failed','retry-limit-reached','remote-command-failed'].includes(e.action)).length;
-cachedAgents=agents;
+cachedAgents=agents;cachedEvents=events;
 const groups=[...new Set(agents.map(a=>a.group))].sort();
 const gf=document.getElementById('groupFilter'), oldGroup=gf.value;
 gf.innerHTML='<option value="">Todos os grupos</option>'+groups.map(g=>'<option value="'+esc(g)+'">'+esc(g)+'</option>').join('');
 gf.value=oldGroup;
-renderAgents();
-document.getElementById('events').innerHTML=events.slice(0,120).map(e=>'<div class="event"><strong>'+esc(e.action)+'</strong> '+(e.appName?'· '+esc(e.appName):'')+' <span class="muted">'+new Date(e.time).toLocaleString()+'</span><br>'+esc(e.agentId||e.group||'global')+' — '+esc(e.detail||'')+'</div>').join('');
+const actions=[...new Set(events.map(e=>e.action))].sort();
+const af=document.getElementById('evAction'), oldAction=af.value;
+af.innerHTML='<option value="">Todas as acções</option>'+actions.map(a=>'<option value="'+esc(a)+'">'+esc(a)+'</option>').join('');
+af.value=oldAction;
+renderAgents();renderEvents();
 }catch(e){console.error(e)}}
-document.addEventListener('click',e=>{const b=e.target.closest('.agent-action');if(!b)return;commandAgent(decodeURIComponent(b.dataset.agent),b.dataset.action)});
+document.addEventListener('click',e=>{const r=e.target.closest('.agent-remove');if(r){removeAgent(decodeURIComponent(r.dataset.agent));return}const b=e.target.closest('.agent-action');if(b){commandAgent(decodeURIComponent(b.dataset.agent),b.dataset.action)}});
 refresh();setInterval(refresh,5000);
 </script></body></html>`
 

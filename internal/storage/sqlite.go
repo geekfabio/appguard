@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -52,7 +53,18 @@ func (d *DB) migrate() error {
 PRAGMA journal_mode=WAL;
 PRAGMA busy_timeout=5000;
 
-DROP TABLE IF EXISTS events;
+CREATE TABLE IF NOT EXISTS events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts TEXT NOT NULL,
+	agent_id TEXT,
+	group_name TEXT,
+	action TEXT NOT NULL,
+	app_name TEXT,
+	detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS agents (
 	agent_id TEXT PRIMARY KEY,
@@ -168,6 +180,29 @@ FROM agents WHERE agent_id = ?
 	return &a, nil
 }
 
+// DeleteAgent removes an agent and its queued commands. It reports whether
+// an agent row was actually removed.
+func (d *DB) DeleteAgent(agentID string) (bool, error) {
+	tx, err := d.sql.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec("DELETE FROM agents WHERE agent_id = ?", agentID)
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec("DELETE FROM commands WHERE agent_id = ?", agentID); err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 
 func (d *DB) QueueCommand(command Command) error {
 	if command.Created.IsZero() {
@@ -251,6 +286,113 @@ WHERE id = ? AND delivered_at IS NULL
 		return nil, err
 	}
 	return &command, nil
+}
+
+// EventRecord is a persisted controller event.
+type EventRecord struct {
+	Time    time.Time `json:"time"`
+	AgentID string    `json:"agentId,omitempty"`
+	Group   string    `json:"group,omitempty"`
+	Action  string    `json:"action"`
+	AppName string    `json:"appName,omitempty"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// EventFilter narrows an event query. Empty fields are ignored.
+type EventFilter struct {
+	AgentID string
+	Group   string
+	Action  string
+	Since   time.Time
+	Limit   int
+}
+
+// AppendEvent stores one event.
+func (d *DB) AppendEvent(e EventRecord) error {
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
+	_, err := d.sql.Exec(
+		"INSERT INTO events(ts, agent_id, group_name, action, app_name, detail) VALUES(?,?,?,?,?,?)",
+		e.Time.UTC().Format(time.RFC3339Nano), e.AgentID, e.Group, e.Action, e.AppName, e.Detail,
+	)
+	return err
+}
+
+// ListEvents returns matching events, newest first.
+func (d *DB) ListEvents(f EventFilter) ([]EventRecord, error) {
+	limit := f.Limit
+	if limit <= 0 || limit > 2000 {
+		limit = 300
+	}
+	q := strings.Builder{}
+	q.WriteString("SELECT ts, COALESCE(agent_id,''), COALESCE(group_name,''), action, COALESCE(app_name,''), COALESCE(detail,'') FROM events WHERE 1=1")
+	var args []any
+	if f.AgentID != "" {
+		q.WriteString(" AND agent_id = ?")
+		args = append(args, f.AgentID)
+	}
+	if f.Group != "" {
+		q.WriteString(" AND group_name = ?")
+		args = append(args, f.Group)
+	}
+	if f.Action != "" {
+		q.WriteString(" AND action = ?")
+		args = append(args, f.Action)
+	}
+	if !f.Since.IsZero() {
+		q.WriteString(" AND ts >= ?")
+		args = append(args, f.Since.UTC().Format(time.RFC3339Nano))
+	}
+	q.WriteString(" ORDER BY ts DESC, id DESC LIMIT ?")
+	args = append(args, limit)
+
+	rows, err := d.sql.Query(q.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []EventRecord
+	for rows.Next() {
+		var e EventRecord
+		var ts string
+		if err := rows.Scan(&ts, &e.AgentID, &e.Group, &e.Action, &e.AppName, &e.Detail); err != nil {
+			return nil, err
+		}
+		e.Time, _ = time.Parse(time.RFC3339Nano, ts)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// EventRetention is how long controller events are kept before pruning.
+const EventRetention = 48 * time.Hour
+
+// PruneEvents deletes events older than EventRetention. Logs are kept to a
+// minimum: nothing older than two days survives.
+func (d *DB) PruneEvents() (int64, error) {
+	cutoff := time.Now().Add(-EventRetention).UTC().Format(time.RFC3339Nano)
+	res, err := d.sql.Exec("DELETE FROM events WHERE ts < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneCommands deletes delivered commands older than EventRetention.
+// Pending (undelivered) commands are always kept so an offline agent still
+// receives them when it returns.
+func (d *DB) PruneCommands() (int64, error) {
+	cutoff := time.Now().Add(-EventRetention).UTC().Format(time.RFC3339Nano)
+	res, err := d.sql.Exec(
+		"DELETE FROM commands WHERE delivered_at IS NOT NULL AND delivered_at < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // CommandRecord is a stored command together with its delivery result, used

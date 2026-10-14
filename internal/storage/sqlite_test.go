@@ -70,3 +70,104 @@ func TestMigrateAddsResultColumnsToOldDatabase(t *testing.T) {
 		db.Close()
 	}
 }
+
+func TestEventsFilterAndPrune(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "ev.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	old := now.Add(-3 * 24 * time.Hour) // older than retention
+	must := func(e error) {
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	must(db.AppendEvent(EventRecord{Time: now, AgentID: "pc1", Group: "G1", Action: "process-crash"}))
+	must(db.AppendEvent(EventRecord{Time: now, AgentID: "pc2", Group: "G2", Action: "restart-success"}))
+	must(db.AppendEvent(EventRecord{Time: old, AgentID: "pc1", Group: "G1", Action: "process-crash"}))
+
+	byAgent, _ := db.ListEvents(EventFilter{AgentID: "pc1"})
+	if len(byAgent) != 2 {
+		t.Fatalf("agent filter = %d events", len(byAgent))
+	}
+	byAction, _ := db.ListEvents(EventFilter{Action: "restart-success"})
+	if len(byAction) != 1 || byAction[0].AgentID != "pc2" {
+		t.Fatalf("action filter = %+v", byAction)
+	}
+	recent, _ := db.ListEvents(EventFilter{Since: now.Add(-time.Hour)})
+	if len(recent) != 2 {
+		t.Fatalf("since filter = %d, want 2 (old one excluded)", len(recent))
+	}
+
+	n, err := db.PruneEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d events, want 1", n)
+	}
+	all, _ := db.ListEvents(EventFilter{})
+	if len(all) != 2 {
+		t.Fatalf("after prune = %d events, want 2", len(all))
+	}
+}
+
+func TestDeleteAgentRemovesCommands(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "del.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now()
+	_ = db.UpsertAgent("pc1", "G1", now, map[string]any{"role": "agent"})
+	_ = db.QueueCommand(Command{ID: "x1", AgentID: "pc1", Action: "start-app", Created: now})
+
+	removed, err := db.DeleteAgent("pc1")
+	if err != nil || !removed {
+		t.Fatalf("DeleteAgent = %v, %v", removed, err)
+	}
+	if _, err := db.GetAgent("pc1"); err != sql.ErrNoRows {
+		t.Fatalf("agent still present: %v", err)
+	}
+	if pending, _ := db.FetchPendingCommands("pc1", 10); len(pending) != 0 {
+		t.Fatal("commands not removed with agent")
+	}
+	if again, _ := db.DeleteAgent("pc1"); again {
+		t.Fatal("deleting a missing agent should report false")
+	}
+}
+
+func TestPruneCommandsKeepsPending(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "pc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	old := time.Now().Add(-3 * 24 * time.Hour)
+	_ = db.QueueCommand(Command{ID: "pending", AgentID: "pc1", Action: "start-app", Created: old})
+	_ = db.QueueCommand(Command{ID: "delivered", AgentID: "pc1", Action: "start-app", Created: old})
+	if _, err := db.AckCommand("delivered", "ok", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Force the delivered_at timestamp into the past.
+	if _, err := db.sql.Exec("UPDATE commands SET delivered_at = ? WHERE id = 'delivered'",
+		old.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := db.PruneCommands()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("pruned %d commands, want 1 (only delivered)", n)
+	}
+	if pending, _ := db.FetchPendingCommands("pc1", 10); len(pending) != 1 {
+		t.Fatal("pending command must survive pruning")
+	}
+}

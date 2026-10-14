@@ -390,8 +390,9 @@ GET  /api/v1/commands/{agentId}
 POST /api/v1/commands/ack/{commandId}
 
 GET  /api/v1/admin/agents
-GET  /api/v1/admin/events  # eventos temporários em memória
+GET  /api/v1/admin/events  # filtros: agentId, group, action, sinceHours, limit, format=csv
 GET  /api/v1/admin/agent-detail/{agentId}
+POST /api/v1/admin/agent-remove/{agentId}
 
 POST /api/v1/admin/broadcast/{action}
 POST /api/v1/admin/agent/{agentId}/{action}
@@ -400,9 +401,20 @@ POST /api/v1/admin/group/{group}/{action}
 POST /api/v1/admin/agent-app/{agentId}/{appName}/{action}
 PUT  /api/v1/admin/agent-settings/{agentId}
 
+POST /api/v1/admin/powershell          # enviar script (all/group/agent)
+GET  /api/v1/admin/powershell/results  # resultados por agente
+
+GET  /login   POST /login   GET /logout
+
 GET  /healthz
 GET  /readyz
 ```
+
+> Todos os endpoints `/api/v1/admin/*` e as páginas exigem o login do operador. Os endpoints de agentes ficam abertos.
+
+## Registo de eventos e retenção
+
+Os eventos do controlador são guardados no SQLite e consultáveis no dashboard com filtros por acção e por período, com exportação para CSV. Para manter os registos ao mínimo, **tudo o que tem mais de 2 dias é apagado automaticamente**: eventos e também comandos já entregues (os comandos ainda por entregar a agentes offline são sempre preservados). A limpeza corre ao arrancar e a cada 6 horas. Não há notificações nem alertas externos.
 
 ## SQLite
 
