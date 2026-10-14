@@ -1,44 +1,29 @@
-# AppGuard v1.1.0
+# AppGuard v1.1.1
 
-This release adds a visual first-run configuration experience so AppGuard no longer requires manual JSON editing for initial setup.
+This release removes the shared token requirement.
 
-## First-run wizard
+## Changes
 
-When `appguard.json` is missing, running `appguard.exe` now opens a local setup interface automatically.
+- Controller API no longer requires a Bearer token.
+- Agents no longer send an Authorization header.
+- First-run setup no longer asks for a token.
+- JSON configuration examples no longer contain a token.
+- The dashboard no longer asks for a token.
+- Enrollment works without authentication.
+- Controller and Agent communication remains limited to AppGuard's structured endpoints and commands.
 
-The interface allows you to:
+## Security model
 
-- choose **Controller** or **Agent**;
-- use the Windows computer name automatically as the agent ID;
-- select the monitored `.exe` using a native Windows file picker;
-- add multiple monitored applications;
-- configure the watchdog check interval;
-- configure startup delay and retry settings;
-- enter the Controller URL and shared token for Agent machines;
-- generate a secure token by default for a Controller.
+AppGuard v1.1.1 is intended for trusted LAN environments.
 
-The configuration is saved beside `appguard.exe`.
+Because the API is now unauthenticated:
 
-The setup interface can also be reopened manually:
+- restrict TCP port 8443 to the internal subnet using Windows Firewall;
+- do not expose the Controller directly to the public Internet;
+- use a VPN or network-level access control for remote administration.
 
-```powershell
-.\appguard.exe setup
-```
+The application still does not expose arbitrary PowerShell, CMD, or shell execution.
 
-## Controller behavior
+## First-run setup
 
-The Controller continues to behave as an Agent on its own computer. It runs the local watchdog and checks the applications configured on the Controller itself.
-
-If a monitored local process is not running, AppGuard starts it after the configured `startupDelaySeconds` and then uses the normal retry policy.
-
-## Agent ID
-
-`agentId` is now always derived from the Windows PC name using the operating system hostname.
-
-## Application selection
-
-The setup wizard uses the native Windows executable picker, so the user can browse to the application to monitor instead of typing its path manually.
-
-## Compatibility
-
-Existing JSON configuration files continue to work. On load, the current computer name overrides a manually stored `agentId` so each machine identifies itself consistently.
+Run `appguard.exe` without an `appguard.json` and the visual setup wizard opens automatically. Choose Controller or Agent and select the application executable with the native Windows picker.
