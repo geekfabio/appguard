@@ -229,7 +229,7 @@ input,select{width:100%;padding:11px 12px;background:#07111f;color:#fff;border:1
 <div class="full"><label>Controller URL</label><input id="controllerUrl" placeholder="http://192.168.1.10:8443"></div>
 </div>
 <div class="grid" style="margin-top:16px">
-<div class="full"><label>Shared token</label><input id="token" value="{{TOKEN}}"></div>
+<div class="full"><label>Shared token</label><input id="token" value="{{TOKEN}}"><div class="muted" style="margin-top:6px">Controller: keep or change this token. Agent: enter exactly the same token configured on the controller.</div></div>
 <div><label>Watchdog check interval (seconds)</label><input id="checkEvery" type="number" min="1" value="10"></div>
 </div>
 </div>
@@ -247,6 +247,7 @@ input,select{width:100%;padding:11px 12px;background:#07111f;color:#fff;border:1
 <script>
 let role='';
 let apps=[];
+const generatedToken='{{TOKEN}}';
 
 function setRole(next){
  role=next;
@@ -256,6 +257,9 @@ function setRole(next){
  const group=document.getElementById('group');
  if(next==='controller' && (group.value==='default'||group.value==='')) group.value='Controllers';
  if(next==='agent' && group.value==='Controllers') group.value='default';
+ const token=document.getElementById('token');
+ if(next==='agent' && token.value===generatedToken) token.value='';
+ if(next==='controller' && token.value==='') token.value=generatedToken;
 }
 
 function addApp(app){
