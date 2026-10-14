@@ -322,6 +322,54 @@ func RunController(cfg *config.Config) error {
 		writeJSON(w, map[string]any{"accepted": count})
 	}))
 
+	mux.HandleFunc("/api/v1/admin/agent-settings/", st.auth(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		agentID := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agent-settings/")
+		if agentID == "" {
+			http.Error(w, "missing agent id", http.StatusBadRequest)
+			return
+		}
+		if _, err := st.db.GetAgent(agentID); err == sql.ErrNoRows {
+			http.Error(w, "unknown agent", http.StatusNotFound)
+			return
+		} else if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var settings config.AgentSettings
+		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		config.NormalizeSettings(&settings)
+
+		payload, err := json.Marshal(settings)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		st.mu.Lock()
+		st.commands[agentID] = append(st.commands[agentID], Command{
+			ID: fmt.Sprintf("%d-%s", time.Now().UnixNano(), agentID),
+			Action: "apply-settings",
+			Payload: payload,
+		})
+		st.mu.Unlock()
+
+		_ = st.db.AddEvent(storage.Event{
+			Time: time.Now(), AgentID: agentID, Group: settings.Group,
+			Action: "apply-settings", Detail: "Configuração remota colocada na fila",
+		})
+
+		writeJSON(w, map[string]any{"queued": true})
+	}))
+
 	slog.Info("AppGuard controller listening",
 		"addr", cfg.Controller.Listen,
 		"database", cfg.Controller.DatabasePath)
