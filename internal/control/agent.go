@@ -74,11 +74,16 @@ func sendEvent(client *http.Client, cfg *config.Config, event Event) {
 }
 
 func sendHeartbeat(client *http.Client, cfg *config.Config, w *watchdog.Watchdog) {
+	settings := w.Settings()
+	status := w.Status()
+	status["settings"] = settings
+
 	hb := Heartbeat{
 		AgentID: cfg.AgentID,
-		Group: cfg.Group,
+		Group: settings.Group,
 		Timestamp: time.Now(),
-		Status: w.Status(),
+		Status: status,
+		Settings: settings,
 	}
 	b, _ := json.Marshal(hb)
 
@@ -120,7 +125,20 @@ func fetchCommands(client *http.Client, cfg *config.Config, w *watchdog.Watchdog
 	}
 
 	for _, cmd := range cmds {
-		if err := w.Apply(cmd.Action, cmd.AppName); err != nil {
+		var err error
+		switch cmd.Action {
+		case "apply-settings":
+			var settings config.AgentSettings
+			if e := json.Unmarshal(cmd.Payload, &settings); e != nil {
+				err = e
+			} else {
+				err = w.ApplySettings(settings)
+			}
+		default:
+			err = w.Apply(cmd.Action, cmd.AppName)
+		}
+
+		if err != nil {
 			slog.Error("remote command failed", "command", cmd.Action, "error", err)
 		} else {
 			slog.Info("remote command applied", "command", cmd.Action, "app", cmd.AppName)
