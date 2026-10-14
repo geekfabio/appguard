@@ -18,8 +18,9 @@ import (
 const offlineAfter = 20 * time.Second
 
 type controllerState struct {
-	mu    sync.RWMutex
-	db    *storage.DB
+	mu     sync.RWMutex
+	db     *storage.DB
+	events []Event
 }
 
 type agentView struct {
@@ -111,7 +112,7 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(),
 			AgentID: req.AgentID,
 			Group: req.Group,
@@ -158,12 +159,12 @@ func RunController(cfg *config.Config) error {
 		}
 
 		if previousErr == sql.ErrNoRows {
-			_ = st.db.AddEvent(storage.Event{
+			st.addEvent(Event{
 				Time: time.Now(), AgentID: hb.AgentID, Group: hb.Group,
 				Action: "agent-online", Detail: "Agente registado no controlador",
 			})
 		} else if previous != nil && time.Since(previous.LastSeen) > offlineAfter {
-			_ = st.db.AddEvent(storage.Event{
+			st.addEvent(Event{
 				Time: time.Now(), AgentID: hb.AgentID, Group: hb.Group,
 				Action: "agent-reconnected", Detail: "Agente voltou a comunicar com o controlador",
 			})
@@ -282,11 +283,7 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		events, err := st.db.ListEvents(agentID, 200)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		events := st.listEvents(agentID, 200)
 
 		writeJSON(w, map[string]any{
 			"agent": agentView{
@@ -302,12 +299,7 @@ func RunController(cfg *config.Config) error {
 
 	mux.HandleFunc("/api/v1/admin/events", st.auth(func(w http.ResponseWriter, r *http.Request) {
 		agentID := r.URL.Query().Get("agentId")
-		events, err := st.db.ListEvents(agentID, 300)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, events)
+		writeJSON(w, st.listEvents(agentID, 300))
 	}))
 
 	mux.HandleFunc("/api/v1/admin/broadcast/", st.auth(func(w http.ResponseWriter, r *http.Request) {
@@ -333,7 +325,7 @@ func RunController(cfg *config.Config) error {
 		}
 		st.mu.Unlock()
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(), Action: action, Detail: "Comando global enviado",
 		})
 		w.WriteHeader(http.StatusAccepted)
@@ -367,7 +359,7 @@ func RunController(cfg *config.Config) error {
 		st.enqueueLocked(agentID, action, "")
 		st.mu.Unlock()
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(), AgentID: agentID, Group: a.Group,
 			Action: action, Detail: "Comando enviado ao agente",
 		})
@@ -405,7 +397,7 @@ func RunController(cfg *config.Config) error {
 		}
 		st.mu.Unlock()
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(), Group: group, Action: action,
 			Detail: fmt.Sprintf("Comando enviado a %d agente(s)", count),
 		})
@@ -448,7 +440,7 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(),
 			AgentID: agentID,
 			Group: a.Group,
@@ -503,7 +495,7 @@ func RunController(cfg *config.Config) error {
 			return
 		}
 
-		_ = st.db.AddEvent(storage.Event{
+		st.addEvent(Event{
 			Time: time.Now(), AgentID: agentID, Group: settings.Group,
 			Action: "apply-settings", Detail: "Configuração remota colocada na fila",
 		})
@@ -521,6 +513,40 @@ func RunController(cfg *config.Config) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server.ListenAndServe()
+}
+
+func (s *controllerState) addEvent(event Event) {
+	if event.Time.IsZero() {
+		event.Time = time.Now()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.events = append([]Event{event}, s.events...)
+	if len(s.events) > 300 {
+		s.events = s.events[:300]
+	}
+}
+
+func (s *controllerState) listEvents(agentID string, limit int) []Event {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 || limit > 300 {
+		limit = 300
+	}
+
+	result := make([]Event, 0, limit)
+	for _, event := range s.events {
+		if agentID != "" && event.AgentID != agentID {
+			continue
+		}
+		result = append(result, event)
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result
 }
 
 func (s *controllerState) enqueueLocked(agentID, action, appName string) {
@@ -588,7 +614,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 </style>
 </head>
 <body>
-<header><h1>AppGuard Control Center <span class="muted">v1.0.0</span></h1><div class="sub">Supervisão central e histórico persistente de processos Windows</div></header>
+<header><h1>AppGuard Control Center <span class="muted">v1.0.0</span></h1><div class="sub">Supervisão central e estado em tempo real de processos Windows</div></header>
 <main>
 <div class="toolbar"><input id="search" placeholder="Pesquisar computador ou grupo" oninput="renderAgents()"><select id="groupFilter" onchange="renderAgents()"><option value="">Todos os grupos</option></select><select id="stateFilter" onchange="renderAgents()"><option value="">Todos os estados</option><option value="online">Online</option><option value="offline">Offline</option></select></div>
 <div class="cards">
@@ -607,7 +633,7 @@ input,select,textarea{background:#07111f;border:1px solid #2b4564;color:#fff;bor
 <section class="panel"><h2>Agentes</h2>
 <table><thead><tr><th>Computador</th><th>Grupo</th><th>Versão</th><th>Estado</th><th>Processos</th><th>Retries</th><th>Último contacto</th><th>Acções</th></tr></thead><tbody id="agents"></tbody></table>
 </section>
-<section class="panel"><h2>Eventos persistentes</h2><div class="events" id="events"></div></section>
+<section class="panel"><h2>Eventos recentes (memória)</h2><div class="events" id="events"></div></section>
 </main>
 <script>
 let cachedAgents=[];
