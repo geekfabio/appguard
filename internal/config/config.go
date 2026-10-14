@@ -33,7 +33,8 @@ type Application struct {
 	Enabled           bool   `json:"enabled"`
 	AutoRestart       bool   `json:"autoRestart"`
 	MaxRetries        int    `json:"maxRetries"`
-	ResetAfterSeconds int    `json:"resetAfterSeconds"`
+	ResetAfterSeconds  int    `json:"resetAfterSeconds"`
+	StartupDelaySeconds int   `json:"startupDelaySeconds"`
 }
 
 type AgentSettings struct {
@@ -68,6 +69,7 @@ func applyDefaults(cfg *Config) {
 func normalizeApplication(app *Application) {
 	if app.MaxRetries <= 0 { app.MaxRetries = 5 }
 	if app.ResetAfterSeconds <= 0 { app.ResetAfterSeconds = 300 }
+	if app.StartupDelaySeconds <= 0 { app.StartupDelaySeconds = 60 }
 	if app.WorkingDirectory == "" && app.Path != "" { app.WorkingDirectory = filepath.Dir(app.Path) }
 }
 
